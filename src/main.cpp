@@ -148,7 +148,7 @@ void runCuda() {
 		// execute the kernel
 		int frame = 0;
 		//pathtraceSortMatWCacheBVH(pbo_dptr, frame, iteration,true,false,true,true,0);
-		pathtraceSortMatWCacheBVH(pbo_dptr, frame, iteration,withFBC,alias,sortmat,bvh,shading);
+		pathtraceSortMatWCacheBVH(pbo_dptr, frame, iteration,withFBC,alias,sortmat,false,shading);
 
 		/*
 		if(withFBC)

@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <cmath>
 #include <thrust/execution_policy.h>
+#include <thrust/partition.h>
 #include <thrust/random.h>
 #include <thrust/remove.h>
 #include <thrust/count.h>
@@ -15,9 +16,10 @@
 #include "pathtrace.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "SHARC/SharcCommon.h"
 
 #define ERRORCHECK 1
-#define STACKSIZE 8192 //262144
+#define STACKSIZE 16384 //262144
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -88,6 +90,12 @@ static BVHnode* dev_tree=NULL;
 static glm::vec3* textimgpixel=NULL;
 static int* dev_lights=NULL;
 static float* dev_lights_area=NULL;
+// SHaRC buffers and state
+static SharcState sharcState;
+static uint4* dev_voxelDataBuffer;
+static uint4* dev_voxelDataBufferPrev;
+static uint64_t* dev_hashEntriesBuffer;
+static uint* dev_copyOffsetBuffer;
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
 
@@ -525,9 +533,11 @@ __global__ void kernReshuffle(int N, int* particleArrayIndices, PathSegment* pos
 	  }
 	  posR[index]=pos[particleArrayIndices[index]];
 	  velR[index]=vel[particleArrayIndices[index]];
-  }
+  
+}
 
-/**
+
+  /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
  * of memory management
  */

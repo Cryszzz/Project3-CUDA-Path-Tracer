@@ -55,7 +55,7 @@ CAMERA
 RES         800 800
 FOVY        45
 ITERATIONS  5000
-DEPTH       4
+DEPTH       10
 FILE        cornell
 EYE         7.5 5 0.1
 LOOKAT      -18.5 5 0
@@ -64,8 +64,8 @@ UP          0 1 0
 // Sphere
 OBJECT 0
 mesh
-./../mesh/sponza/sponza2.obj
+./../mesh/hallway2/hallway.obj
 material -1
-TRANS       0 0 0
-ROTAT       0 0 0
+TRANS       0 3 0
+ROTAT       0 90 0
 SCALE       1.0 1.0 1.0

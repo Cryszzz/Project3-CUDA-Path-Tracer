@@ -74,6 +74,8 @@ set(headers
     src/preview.h
     src/utilities.h
     src/ImGui/imconfig.h
+    src/SHARC/SharcCommon.h
+    src/SHARC/HashGridCommon.h
 	
 	src/ImGui/imgui.h
     src/ImGui/imconfig.h

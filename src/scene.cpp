@@ -133,36 +133,6 @@ void buildBVH(std::vector<BVHnode> &BVH, std::vector<Geom>& geoms){
     BVH=pool;
     printvec3(BVH[BVH.size()-1].min);
     printvec3(BVH[BVH.size()-1].max);
-    /*int start=0;
-    int end=BVH.size();
-    while (true){
-        int size=end-start;
-        for(int i=0;i<(size+1)/2;i++){
-            BVHnode newnode;
-            newnode.leaf=false;
-            int index1=i*2+start;
-            int index2=-1;
-            BVHnode b=BVH[i*2+start];
-            if(i*2+1+start<end){
-                index2=i*2+1+start;
-                BVHnode parent=BVH[i*2+1+start];
-                newnode.min=glm::vec3(fmin(b.min.x,parent.min.x),fmin(b.min.y,parent.min.y),fmin(b.min.z,parent.min.z));
-                newnode.max=glm::vec3(fmax(b.max.x,parent.max.x),fmax(b.max.y,parent.max.y),fmax(b.max.z,parent.max.z));
-            }else{
-                newnode.min=b.min;
-                newnode.max=b.max;
-            }
-            newnode.leftchild=index1;
-            newnode.rightchild=index2;
-            BVH.push_back(newnode);
-        }
-        start=end;
-        end+=(size+1)/2;
-        if(end-start==1){
-            break;
-        }
-    }
-    */
     cout<<"total count "<<BVH.size()<<endl;
 
     //printBVH(BVH,geoms);
@@ -247,20 +217,15 @@ int Scene::loadGeom(string objectid) {
                     std::string warn;
                     std::string err;
                     int materialStartIdx=materials.size();
-                    bool ret = tinyobj::LoadObj(&attrib, &shapes, &meshmaterials, &warn, &err, line.c_str(),"./../mesh/");
-                    /*cout<<"material count "<<materials.size()<<endl;
-                    for(auto material:materials){
-                        glm::vec3 color=glm::vec3(material.diffuse[0],material.diffuse[1],material.diffuse[2]);
-                        cout<<"diffuse color ";
-                        printvec3(color);
-                        cout<<"diffuse texture " <<material.diffuse_texname.compare("")<<endl;
-                        cout<<"dissolve " <<material.dissolve<<endl;
-                    }*/
+                    string objPrefix = line.substr(0, line.find_last_of("/") + 1);
+                    cout << "OBJ file prefix: " << objPrefix << endl;
+                    bool ret = tinyobj::LoadObj(&attrib, &shapes, &meshmaterials, &warn, &err, line.c_str(), objPrefix.c_str());
                     // load mesh materials
-                    std::string filePath="./../mesh/";
+                    std::string filePath= objPrefix;
                     int imgIdx=0;
                     int imgIdxPixel=0;
                     for(auto material:meshmaterials){
+                        tinyobj::material_t matcopy = material;
                         Material mat;
                         glm::vec3 emissive=glm::vec3(material.emission[0],material.emission[1],material.emission[2]);
                         
@@ -366,8 +331,6 @@ int Scene::loadGeom(string objectid) {
                             triGeom.type=TRIANGLE;
                             
                             triGeom.materialid=shape.mesh.material_ids[i]+materialStartIdx;
-                            //cout<< "material id " <<shape.mesh.material_ids[i]+materialStartIdx<<"  ";
-                            //cout << "mesh indices" <<i << endl;
                             for (int k = 0; k < 3; k++) {
                                 //cout << "triangle indices" <<k<< endl;
                                 glm::vec3 pos;
@@ -410,15 +373,6 @@ int Scene::loadGeom(string objectid) {
                             //printvec3(newTri.dpdv);
                             newTri.g_norm=(newTri.normals[0]+newTri.normals[1]+newTri.normals[2])/3.0f;
                             LS+=glm::length(glm::cross(e1,e2));
-                            /*cout<<"triangle "<<tri_size-starting_index<<endl;
-                            cout<<"normal ";
-                            printvec3(newTri.g_norm);
-                            cout<<"v0 ";
-                            printvec3(newTri.vertices[0]);
-                            cout<<"v1 ";
-                            printvec3(newTri.vertices[1]);
-                            cout<<"v2 ";
-                            printvec3(newTri.vertices[2]);*/
                             
                             newTri.size = glm::length(glm::cross(newTri.vertices[1] - newTri.vertices[0], newTri.vertices[2] - newTri.vertices[0]));
 

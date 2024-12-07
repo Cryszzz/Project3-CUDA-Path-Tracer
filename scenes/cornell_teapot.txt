@@ -72,8 +72,8 @@ SCALE       100 .01 100
 // Sphere
 OBJECT 1
 mesh
-./../mesh/cube_norm.obj
+./../mesh/teapot_reduce.obj
 material 4
 TRANS       0 3.0 0
 ROTAT       0 0 0
-SCALE       1 1 1
+SCALE       0.1 0.1 0.1
