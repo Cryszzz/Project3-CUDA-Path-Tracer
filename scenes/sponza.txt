@@ -1,4 +1,4 @@
-BACKGROUND_COLOR 0.81 0.91 0.98
+BACKGROUND_COLOR 0.71 0.81 0.88
 
 // Emissive material (light)
 MATERIAL 0

@@ -100,19 +100,8 @@ void diffuseScatter(PathSegment & pathSegment,
     pathSegment.color *= materialColor;
     pathSegment.remainingBounces--;
     pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
-    /*if(r2<0.5f){
-        glm::vec3 dist;
-        float pdf;
-        sampleLight(dist,light,lightsize,rng,pdf,pathSegment.ray.origin);
-
-        pathSegment.ray.direction=glm::normalize(dist-pathSegment.ray.origin);
-        pathSegment.color*=glm::abs(glm::dot(pathSegment.ray.direction, intersection.surfaceNormal))/PI;
-        pathSegment.remainingBounces=1;
-        //float pdf=glm::length2(dist-pathSegment.ray.origin)/cos;
-        //pathSegment.color/=pdf;
-    }else{*/
-        pathSegment.ray.direction=glm::normalize(calculateRandomDirectionInHemisphere(intersection.surfaceNormal,rng,1.0f));
-    //}
+    pathSegment.ray.direction=glm::normalize(calculateRandomDirectionInHemisphere(intersection.surfaceNormal,rng,1.0f));
+    pathSegment.throughput *= materialColor * (glm::dot(pathSegment.ray.direction, intersection.surfaceNormal) / TWO_PI);
     
 }
 
@@ -121,23 +110,23 @@ void refractScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
      glm::vec3 &materialColor,const float ior,thrust::default_random_engine &rng){
     thrust::uniform_real_distribution<float> u01(0, 1);
-    float refraction_ratio = intersection.outside ? (1.0f/ior):(ior);
-    float cos_theta = glm::min(glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal), 1.0f);
-    bool cannot_refract = ((glm::sqrt(1.0f - cos_theta * cos_theta)*refraction_ratio ) > 1.0f);
-    
-    bool fresnel = reflectance(cos_theta, refraction_ratio) > u01(rng);
-    if (cannot_refract||fresnel){
-        //pathSegment.color *= glm::vec3(1.0f)-reflectance(cos_theta, refraction_ratio);
-        pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
-        pathSegment.ray.direction=glm::reflect(glm::normalize(pathSegment.ray.direction),intersection.surfaceNormal);
+    float refractionRatio = intersection.outside ? (1.0f / ior) : ior;
+    float cosTheta = glm::min(glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal), 1.0f);
+    bool cannotRefract = ((glm::sqrt(1.0f - cosTheta * cosTheta) * refractionRatio) > 1.0f);
+
+    float fresnelReflectance = reflectance(cosTheta, refractionRatio);
+    bool reflect = cannotRefract || (fresnelReflectance > u01(rng));
+
+    if (reflect) {
+        pathSegment.ray.origin = getPointOnRay(pathSegment.ray, intersection.t);
+        pathSegment.ray.direction = glm::reflect(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
+        pathSegment.throughput *= materialColor * fresnelReflectance; // Adjust throughput for reflection
+    } else {
+        pathSegment.ray.origin = getPointOnRay(pathSegment.ray, intersection.t + 0.0002f);
+        pathSegment.ray.direction = glm::refract(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal, refractionRatio);
+        pathSegment.throughput *= materialColor * (1.0f - fresnelReflectance); // Adjust throughput for transmission
     }
-    else{
-        //pathSegment.color *= glm::vec3(1.0f)-reflectance(cos_theta, refraction_ratio);
-        pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t+0.0002f);
-        pathSegment.ray.direction =glm::refract(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal, refraction_ratio);
-        
-    }
-    pathSegment.remainingBounces--; 
+    pathSegment.remainingBounces--;
 }
 
 __host__ __device__
@@ -146,29 +135,18 @@ void specularScatter(PathSegment & pathSegment,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
     float & lightsize){
     thrust::uniform_real_distribution<float> u01(0, 1);
-    float r2=u01(rng);
-    float cos=glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
-    pathSegment.color *= materialColor;
-    pathSegment.remainingBounces--;
-    pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
-    /*if(r2<0.5f){
-        glm::vec3 dist;
-        float pdf;
-        sampleLight(dist,light,lightsize,rng,pdf,pathSegment.ray.origin);
+    pathSegment.color *= materialColor; // Update color by material reflectivity
 
-        pathSegment.ray.direction=glm::normalize(dist-pathSegment.ray.origin);
-        //pathSegment.color*=(exponent+1)*pow(glm::abs(glm::dot(pathSegment.ray.direction, intersection.surfaceNormal)),exponent)/TWO_PI;
-        pathSegment.remainingBounces=1;
-    }else{*/
-        glm::vec3 reflected=glm::reflect(pathSegment.ray.direction,intersection.surfaceNormal);
-        pathSegment.ray.direction = glm::normalize(calculateRandomDirectionInHemisphere(reflected,rng,exponent));
-    //}
-    //glass apperance at top
-    //bool fresnel = reflectance(cos_theta, refraction_ratio) > u01(rng);
-    
-    if(dot(pathSegment.ray.direction,intersection.surfaceNormal)<0){
-        pathSegment.remainingBounces=0;
-        pathSegment.color=glm::vec3(0.0f);
+    glm::vec3 reflected = glm::reflect(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
+    pathSegment.ray.direction = glm::normalize(calculateRandomDirectionInHemisphere(reflected, rng, exponent));
+    pathSegment.throughput *= materialColor * glm::pow(glm::dot(pathSegment.ray.direction, reflected), exponent);
+    pathSegment.remainingBounces--;
+
+    pathSegment.ray.origin = getPointOnRay(pathSegment.ray, intersection.t);
+
+    if (glm::dot(pathSegment.ray.direction, intersection.surfaceNormal) < 0) {
+        pathSegment.remainingBounces = 0; // Terminate path
+        pathSegment.color = glm::vec3(0.0f);
         return;
     }
     
@@ -340,4 +318,5 @@ void scatterRay(
             diffuseScatter(pathSegment,intersection,materialColor,rng,light,lightsize);
         } 
     }
+
 }
