@@ -97,7 +97,10 @@ struct PathSegment {
     glm::vec3 color;
     int pixelIndex;
     int remainingBounces;
+<<<<<<< HEAD
     glm::vec3 throughput;
+=======
+>>>>>>> parent of bdf092c (base sharc)
 };
 
 // Use with a corresponding PathSegment to do:

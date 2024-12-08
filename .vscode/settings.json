@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "xstring": "cpp",
+<<<<<<< HEAD
         "ostream": "cpp",
         "cmath": "cpp",
         "vector": "cpp",
@@ -15,5 +16,8 @@
         "limits": "cpp",
         "tuple": "cpp",
         "xlocale": "cpp"
+=======
+        "ostream": "cpp"
+>>>>>>> parent of bdf092c (base sharc)
     }
 }

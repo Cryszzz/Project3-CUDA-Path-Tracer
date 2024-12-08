@@ -16,26 +16,12 @@
 #include "pathtrace.h"
 #include "intersections.h"
 #include "interactions.h"
-
-#define SHARC_ENABLE_64_BIT_ATOMICS 1
-#define HASH_GRID_ENABLE_64_BIT_ATOMICS 1
-#define SHARC_UPDATE 1
-#define SHARC_QUERY 1
-#define ENABLE_CACHE 1
 #include "SHARC/SharcCommon.h"
 
 #define RussianRoulette 1
 
 #define ERRORCHECK 1
 #define STACKSIZE 16384 //262144
-
-__host__ __device__ inline float3 glmToFloat3(const glm::vec3& vec) {
-    return make_float3(vec.x, vec.y, vec.z);
-}
-
-__host__ __device__ inline glm::vec3 float3ToGlm(const float3& vec) {
-    return glm::vec3(vec.x, vec.y, vec.z);
-}
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -111,7 +97,7 @@ static BVHnode* dev_tree=NULL;
 static glm::vec3* textimgpixel=NULL;
 static int* dev_lights=NULL;
 static float* dev_lights_area=NULL;
-// SHaRC state and buffers
+// SHaRC buffers and state
 static SharcState sharcState;
 static uint4* dev_voxelDataBuffer;
 static uint4* dev_voxelDataBufferPrev;
@@ -170,6 +156,7 @@ void pathtraceInit(Scene* scene) {
 	cudaMalloc(&firstBounceP, pixelcount  * sizeof(PathSegment));
 	cudaMalloc(&dev_pathR, pixelcount * sizeof(PathSegment));
 
+<<<<<<< HEAD
 	// SHaRC buffer allocations
 	size_t bufferSize = (1 <<22); // Example: 2^22 entries
 	cudaMalloc(&dev_voxelDataBuffer, bufferSize * sizeof(uint4));
@@ -190,6 +177,8 @@ void pathtraceInit(Scene* scene) {
 	sharcState.hashMapData.hashEntriesBuffer = dev_hashEntriesBuffer;
 	sharcState.voxelDataBuffer = dev_voxelDataBuffer;
 	sharcState.voxelDataBufferPrev = dev_voxelDataBufferPrev;
+=======
+>>>>>>> parent of bdf092c (base sharc)
 	checkCUDAError("pathtraceInit");
 }
 
@@ -207,14 +196,8 @@ void pathtraceFree() {
 	cudaFree(firstBounceP);
 	cudaFree(dev_keys);
 	cudaFree(finalbuffer);
-	cudaFree(textimgpixel);
+	//cudaFree(textimgpixel);
 	//cudaFree(textimgidx);
-
-	// Free SHaRC buffers
-	cudaFree(dev_voxelDataBuffer);
-	cudaFree(dev_voxelDataBufferPrev);
-	cudaFree(dev_hashEntriesBuffer);
-	cudaFree(dev_copyOffsetBuffer);
 	checkCUDAError("pathtraceFree");
 }
 
@@ -462,8 +445,7 @@ __global__ void computeIntersectionsBVH(
 // Your shaders should handle that - this can allow techniques such as
 // bump mapping.
 __global__ void shadeFakeMaterial(
-	int iter,
-	int depth
+	int iter
 	, int num_paths
 	, ShadeableIntersection* shadeableIntersections
 	, PathSegment* pathSegments
@@ -475,7 +457,6 @@ __global__ void shadeFakeMaterial(
 	, float* LightArea
 	, int lightsize
 	, int shading
-	, SharcState sharcState
 )
 {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -486,6 +467,7 @@ __global__ void shadeFakeMaterial(
 		  // Set up the RNG
 		  // LOOK: this is how you use thrust's RNG! Please look at
 		  // makeSeededRandomEngine as well.
+<<<<<<< HEAD
 		  	Ray& ray = pathSegments[idx].ray;
 		  	SharcHitData sharcHitData;
 			sharcHitData.positionWorld = glmToFloat3(ray.origin + ray.direction * intersection.t);
@@ -502,6 +484,8 @@ __global__ void shadeFakeMaterial(
                     return;
                 }
             }
+=======
+>>>>>>> parent of bdf092c (base sharc)
 			thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
 			
 			thrust::uniform_real_distribution<float> u01(0, 1);
@@ -512,6 +496,7 @@ __global__ void shadeFakeMaterial(
 			if (intersection.materialId == 5)
 				int test = 1;
 			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,textPixel,back,geoms[gidx],LightArea[index],shading);
+<<<<<<< HEAD
 		
 			if (ENABLE_CACHE) {
 				SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng));
@@ -531,6 +516,8 @@ __global__ void shadeFakeMaterial(
 			if (ENABLE_CACHE) {
 				//SharcSetThroughput(sharcState, glmToFloat3(pathSegments[idx].throughput));
 			}
+=======
+>>>>>>> parent of bdf092c (base sharc)
 			// If the material indicates that the object was a light, "light" the ray
 			// If there was no intersection, color the ray black.
 			// Lots of renderers use 4 channel color, RGBA, where A = alpha, often
@@ -540,9 +527,12 @@ __global__ void shadeFakeMaterial(
 		else {
 			pathSegments[idx].color *= back;
 			pathSegments[idx].remainingBounces=0;
+<<<<<<< HEAD
 			if (ENABLE_CACHE) {
 				SharcUpdateMiss(sharcState,  glmToFloat3(back));
 			}
+=======
+>>>>>>> parent of bdf092c (base sharc)
 		}
 	}
 }
@@ -748,7 +738,7 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 
 		// clean shading chunks
 		cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
-		SharcInit(sharcState);
+
 		// tracing
 		dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
 		if(depth==0&&iter>1&&Cache){
@@ -808,7 +798,10 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 
 		shadeFakeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
 			iter,
+<<<<<<< HEAD
 			depth,
+=======
+>>>>>>> parent of bdf092c (base sharc)
 			num_paths,
 			dev_intersections,
 			dev_paths,
@@ -819,8 +812,7 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 			dev_lights,
 			dev_lights_area,
 			hst_scene->Lights.size(),
-			shading,
-			sharcState
+			shading
 		);
 
 		kernScatter << <numblocksPathSegmentTracing, blockSize1d >> > (
