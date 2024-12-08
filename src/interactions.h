@@ -97,11 +97,11 @@ void diffuseScatter(PathSegment & pathSegment,
     float cos=glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
     thrust::uniform_real_distribution<float> u01(0, 1);
     float r2=u01(rng);
-    pathSegment.throughput *= materialColor * (glm::dot(pathSegment.ray.direction, intersection.surfaceNormal) / TWO_PI);
     pathSegment.color *= materialColor;
     pathSegment.remainingBounces--;
     pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
     pathSegment.ray.direction=glm::normalize(calculateRandomDirectionInHemisphere(intersection.surfaceNormal,rng,1.0f));
+    pathSegment.throughput *= materialColor * (glm::dot(pathSegment.ray.direction, intersection.surfaceNormal) / TWO_PI);
     
 }
 
