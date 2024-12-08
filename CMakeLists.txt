@@ -62,6 +62,12 @@ set(GLM_ROOT_DIR "external")
 find_package(GLM REQUIRED)
 include_directories(${GLM_INCLUDE_DIRS})
 
+set(OIDN_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/external/include/OpenImageDenoise")
+set(OIDN_LIBRARY "${CMAKE_SOURCE_DIR}/external/lib/OpenImageDenoise.lib")
+set(OIDN_CORE_LIBRARY "${CMAKE_SOURCE_DIR}/external/lib/OpenImageDenoise_core.lib")
+include_directories(${OIDN_INCLUDE_DIR})
+link_directories("${CMAKE_SOURCE_DIR}/external/lib")
+
 set(headers
     src/main.h
     src/image.h
@@ -119,5 +125,35 @@ source_group(Sources FILES ${sources})
 cuda_add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers})
 target_link_libraries(${CMAKE_PROJECT_NAME}
     ${LIBRARIES}
+    "${CMAKE_SOURCE_DIR}/external/lib/OpenImageDenoise.lib"
+    "${CMAKE_SOURCE_DIR}/external/lib/OpenImageDenoise_core.lib"
     #stream_compaction  # TODO: uncomment if using your stream compaction
+)
+
+# dll
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/external/bin/OpenImageDenoise.dll"
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
+	)
+
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD 
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/external/bin/OpenImageDenoise_core.dll"
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
     )
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD 
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/external/bin/OpenImageDenoise_device_cpu.dll"
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
+    )
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD 
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/external/bin/OpenImageDenoise_device_cuda.dll"
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>)
+
+
+
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>")
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-lineinfo;-src-in-ptx>")
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})

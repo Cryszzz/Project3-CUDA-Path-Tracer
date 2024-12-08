@@ -16,6 +16,7 @@
 #include "pathtrace.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "OpenImageDenoise/oidn.hpp"
 
 #define SHARC_ENABLE_64_BIT_ATOMICS 1
 #define HASH_GRID_ENABLE_64_BIT_ATOMICS 1
@@ -23,8 +24,9 @@
 #define SHARC_QUERY 1
 #define ENABLE_CACHE 1 //SHARC ENABLE CACHE
 #include "SHARC/SharcCommon.h"
-#define RussianRoulette 0
+#define RussianRoulette 1
 #define ERRORCHECK 1
+#define DENOISE 1
 #define STACKSIZE 16384 //262144
 
 __host__ __device__ inline float3 glmToFloat3(const glm::vec3& vec) {
@@ -90,6 +92,7 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
 		pbo[index].z = color.z;
 	}
 }
+
 static size_t bufferSize = (1 << 22); // Example: 2^22 entries
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
@@ -115,6 +118,8 @@ static uint4* dev_voxelDataBuffer;
 static uint4* dev_voxelDataBufferPrev;
 static uint64_t* dev_hashEntriesBuffer;
 static uint* dev_copyOffsetBuffer;
+static glm::vec3* dev_normalImage;
+static glm::vec3* dev_albedoImage;
 
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
@@ -132,6 +137,10 @@ void pathtraceInit(Scene* scene) {
 
 	cudaMalloc(&dev_image, pixelcount * sizeof(glm::vec3));
 	cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
+	cudaMalloc(&dev_normalImage, pixelcount * sizeof(glm::vec3));
+	cudaMemset(dev_normalImage, 0, pixelcount * sizeof(glm::vec3));
+	cudaMalloc(&dev_albedoImage, pixelcount * sizeof(glm::vec3));
+	cudaMemset(dev_albedoImage, 0, pixelcount * sizeof(glm::vec3));
 
 	cudaMalloc(&dev_paths, pixelcount * sizeof(PathSegment));
 
@@ -208,6 +217,8 @@ void pathtraceFree() {
 	cudaFree(finalbuffer);
 	cudaFree(textimgpixel);
 	//cudaFree(textimgidx);
+	cudaFree(dev_normalImage);
+	cudaFree(dev_albedoImage);
 
 	// Free SHaRC buffers
 	cudaFree(dev_voxelDataBuffer);
@@ -240,6 +251,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 
 		segment.ray.origin = cam.position;
 		segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
+		segment.throughput=glm::vec3(1.0f);
 		// TODO: implement antialiasing by jittering the ray
 		//+u01(rng1)-0.5f
 		//+u01(rng0)-0.5f
@@ -450,6 +462,67 @@ __global__ void computeIntersectionsBVH(
 	}
 }
 
+void denoiseImage(const std::vector<glm::vec3>* inputImage, 
+    const std::vector<glm::vec3>* albedoImage,
+	const std::vector<glm::vec3>* normalImage,
+    std::vector<glm::vec3>* outputImage, 
+    int numPixels, glm::ivec2 camResolution)
+{
+    const char* errorMessage;
+    oidn::DeviceRef device = oidn::newDevice();
+	device.commit();
+
+	oidn::BufferRef colorBuf = device.newBuffer(camResolution.x * camResolution.y * 3 * sizeof(float)); // beauty buffer
+	oidn::BufferRef albedoBuf = device.newBuffer(camResolution.x * camResolution.y * 3 * sizeof(float)); // albedo buffer
+	oidn::BufferRef normalBuf = device.newBuffer(camResolution.x * camResolution.y * 3 * sizeof(float)); // normal buffer
+
+
+	oidn::FilterRef filter = device.newFilter("RT");
+    filter.setImage("color", colorBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+	filter.setImage("albedo", albedoBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+	filter.setImage("normal", normalBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+    filter.setImage("output", colorBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+    filter.set("hdr", true);
+    filter.commit();
+    if (device.getError(errorMessage) != oidn::Error::None)
+        std::cerr << "Error: " << errorMessage << std::endl;
+
+    float* colorPtr = (float*)colorBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		colorPtr[i * 3] = (*inputImage)[i].x;
+		colorPtr[i * 3 + 1] = (*inputImage)[i].y;
+		colorPtr[i * 3 + 2] = (*inputImage)[i].z;
+	}
+
+	float* albedoPtr = (float*)albedoBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		albedoPtr[i * 3] = (*albedoImage)[i].x;
+		albedoPtr[i * 3 + 1] = (*albedoImage)[i].y;
+		albedoPtr[i * 3 + 2] = (*albedoImage)[i].z;
+	}
+
+	float* normalPtr = (float*)normalBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		glm::vec3 normal = glm::normalize((*normalImage)[i]);
+		normalPtr[i * 3] = normal.x;
+		normalPtr[i * 3 + 1] = normal.y;
+		normalPtr[i * 3 + 2] = normal.z;
+	}
+
+	filter.execute();
+
+
+    if (device.getError(errorMessage) != oidn::Error::None)
+        std::cerr << "Error: " << errorMessage << std::endl;
+
+    // copy back to outputImage
+	colorPtr = (float*)colorBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		(*outputImage)[i] = glm::vec3(colorPtr[i * 3], colorPtr[i * 3 + 1], colorPtr[i * 3 + 2]);
+	}
+
+}
+
 // LOOK: "fake" shader demonstrating what you might do with the info in
 // a ShadeableIntersection, as well as how to use thrust's random number
 // generator. Observe that since the thrust random number generator basically
@@ -465,6 +538,8 @@ __global__ void shadeFakeMaterial(
 	, int num_paths
 	, ShadeableIntersection* shadeableIntersections
 	, PathSegment* pathSegments
+	, glm::vec3* albedoImage
+	, glm::vec3* normalImage
 	, Material* materials
 	, glm::vec3 back
 	, glm::vec3* textPixel
@@ -480,6 +555,10 @@ __global__ void shadeFakeMaterial(
 	bool updateCache = depth%2==0;
 	if (idx < num_paths)
 	{	
+		if(depth==0){
+			albedoImage[pathSegments[idx].pixelIndex]=materials[idx].color;
+			normalImage[pathSegments[idx].pixelIndex]=shadeableIntersections[idx].surfaceNormal;
+		}
 		ShadeableIntersection intersection = shadeableIntersections[idx];
 		if (intersection.t > 0.0f) { // if the intersection exists...
 		  // Set up the RNG
@@ -513,23 +592,24 @@ __global__ void shadeFakeMaterial(
 				int test = 1;
 			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,textPixel,back,geoms[gidx],LightArea[index],shading,throughput);
 			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0&&updateCache) {
-				//SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng));
-				//sharcHitData.emissive = glmToFloat3(materials[intersection.materialId].emittance*materials[intersection.materialId].color);
 				if(!SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng))){
-					//pathSegments[idx].remainingBounces = 0; // Terminate path
-					//return;
+					pathSegments[idx].remainingBounces = 0; // Terminate path
+					return;
 				};
 			}
+			pathSegments[idx].throughput*= throughput;
 			if(RussianRoulette&&pathSegments[idx].remainingBounces>0){
 				if (depth > 3) {
-					float q = glm::min(1.0f, computeLuminance(throughput));
+					float q = glm::min(1.0f, computeLuminance(pathSegments[idx].throughput));
+					float qt = glm::min(1.0f, computeLuminance(throughput));
 					thrust::uniform_real_distribution<float> u01(0, 1);
 					float randomValue = u01(rng);
 					if (randomValue > q) {
 						pathSegments[idx].remainingBounces = 0; // Terminate path
 						return;
 					}else{
-						throughput /= q;
+						throughput /= qt;
+						pathSegments[idx].throughput/=q;
 					}
 				}
 			}
@@ -739,9 +819,11 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		(cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
 
 	if (ENABLE_CACHE) {
-		dev_voxelDataBufferPrev=dev_voxelDataBuffer;
+		auto temp = dev_voxelDataBufferPrev;
+		dev_voxelDataBufferPrev = dev_voxelDataBuffer;
+		dev_voxelDataBuffer = temp;
 		cudaMemset(dev_voxelDataBuffer, 0, bufferSize * sizeof(uint4));
-		//cudaMemset(dev_voxelDataBufferPrev, 0, bufferSize * sizeof(uint4));
+		cudaMemset(dev_voxelDataBufferPrev, 0, bufferSize * sizeof(uint4));
 	}
 	// 1D block for path tracing
 	const int blockSize1d = 128;
@@ -836,6 +918,8 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 			num_paths,
 			dev_intersections,
 			dev_paths,
+			dev_albedoImage,
+			dev_normalImage,
 			dev_materials,
 			hst_scene->backColor,
 			textimgpixel,
@@ -877,16 +961,17 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		const int threadsPerBlock = 256;
 		const int blocks = (sharcState.hashMapData.capacity + threadsPerBlock - 1) / threadsPerBlock;
 		// SHaRC Resolve Kernel
+		sharcState.gridParameters.cameraPositionPrev = sharcState.gridParameters.cameraPosition;
+		sharcState.gridParameters.cameraPosition = glmToFloat3(cam.position);
 		sharcResolveKernel << <blocks, threadsPerBlock >> >(
 			dev_voxelDataBuffer, dev_voxelDataBufferPrev, dev_hashEntriesBuffer, 
-			dev_copyOffsetBuffer, glmToFloat3(cam.position), 
-			sharcState.gridParameters.cameraPosition, sharcState.gridParameters.sceneScale, 
-			sharcState.hashMapData.capacity, 10, 64);
+			dev_copyOffsetBuffer, sharcState.gridParameters.cameraPosition, 
+			sharcState.gridParameters.cameraPositionPrev, sharcState.gridParameters.sceneScale, 
+			sharcState.hashMapData.capacity, 5, 256);
 		cudaDeviceSynchronize();
 		checkCUDAError("sharcResolveKernel");
 		
-		sharcState.gridParameters.cameraPositionPrev = sharcState.gridParameters.cameraPosition;
-		sharcState.gridParameters.cameraPosition = glmToFloat3(cam.position);
+		
 		
 		// SHaRC Compaction Kernel
 		sharcCompactionKernel << <blocks, threadsPerBlock >> >(
@@ -895,10 +980,34 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		checkCUDAError("sharcCompactionKernel");
 	}
 	
-	// Assemble this iteration and apply it to the image
-	
-
 	///////////////////////////////////////////////////////////////////////////
+
+	// Assemble this iteration and apply it to the image
+	if(DENOISE){
+		int interval = 10;
+		if (iter % interval == 0 || iter == hst_scene->state.iterations) {
+			// copy image data to host memory
+			// beauty buffer
+			std::vector<glm::vec3> hst_image = std::vector<glm::vec3>(pixelcount);
+			std::vector<glm::vec3> hst_image_post = std::vector<glm::vec3>(pixelcount);
+			cudaMemcpy(hst_image.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			cudaMemcpy(hst_image_post.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			// albedo buffer
+			std::vector<glm::vec3> hst_albedoImage = std::vector<glm::vec3>(pixelcount);
+			cudaMemcpy(hst_albedoImage.data(), dev_albedoImage, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			// normal buffer
+			std::vector<glm::vec3> hst_normalImage = std::vector<glm::vec3>(pixelcount);
+			cudaMemcpy(hst_normalImage.data(), dev_normalImage, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			// denoise
+			denoiseImage(&hst_image, &hst_albedoImage, &hst_normalImage, &hst_image_post, pixelcount, cam.resolution);
+			// copy back to device memory
+			cudaMemcpy(dev_image, hst_image_post.data(), pixelcount * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+			cudaDeviceSynchronize();
+		}
+    }
 
 	// Send results to OpenGL buffer for rendering
 	sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
