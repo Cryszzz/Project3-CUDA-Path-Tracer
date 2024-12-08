@@ -17,7 +17,7 @@
 #define SHARC_VERSION_REVISION              0
 
 // Define SHARC_UPDATE and SHARC_QUERY based on their states
-#if (SHARC_UPDATE || SHARC_QUERY)
+/* #if (SHARC_UPDATE || SHARC_QUERY)
     #if SHARC_UPDATE
         #define SHARC_QUERY 0
     #else
@@ -26,7 +26,7 @@
 #else
     #define SHARC_QUERY 0
     #define SHARC_UPDATE 0
-#endif
+#endif */
 
 // Constants for SHARC
 #define SHARC_SAMPLE_NUM_MULTIPLIER             16
@@ -102,7 +102,7 @@ __host__ __device__ inline uint SharcGetAccumulatedFrameNum(uint packedData) {
 }
 
 __host__ __device__ inline float3 SharcResolveAccumulatedRadiance(uint3 accumulatedRadiance, uint accumulatedSampleNum) {
-    return make_float3(accumulatedRadiance.x, accumulatedRadiance.y, accumulatedRadiance.z) / (accumulatedSampleNum * SHARC_RADIANCE_SCALE);
+    return make_float3(accumulatedRadiance.x, accumulatedRadiance.y, accumulatedRadiance.z) / (accumulatedSampleNum * float(SHARC_RADIANCE_SCALE));
 }
 
 __host__ __device__ inline SharcVoxelData SharcUnpackVoxelData(uint4 voxelDataPacked) {
@@ -127,15 +127,9 @@ __host__ __device__ inline SharcVoxelData SharcGetVoxelData(uint4* voxelDataBuff
     }
 
     // Fetch packed data from buffer
-    uint4 voxelDataPacked = voxelDataBuffer[cacheEntry];
+    uint4 voxelDataPacked = BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry);
 
-    // Unpack and return the voxel data
-    voxelData.accumulatedRadiance = make_uint3(voxelDataPacked.x, voxelDataPacked.y, voxelDataPacked.z);
-    voxelData.accumulatedSampleNum = (voxelDataPacked.w >> SHARC_SAMPLE_NUM_BIT_OFFSET) & SHARC_SAMPLE_NUM_BIT_MASK;
-    voxelData.accumulatedFrameNum = (voxelDataPacked.w >> SHARC_ACCUMULATED_FRAME_NUM_BIT_OFFSET) & SHARC_ACCUMULATED_FRAME_NUM_BIT_MASK;
-    voxelData.staleFrameNum = (voxelDataPacked.w >> SHARC_STALE_FRAME_NUM_BIT_OFFSET) & SHARC_STALE_FRAME_NUM_BIT_MASK;
-
-    return voxelData;
+    return SharcUnpackVoxelData(voxelDataPacked);
 }
 
 // Additional utility functions
@@ -150,10 +144,10 @@ __device__ inline void SharcAddVoxelData(
         static_cast<unsigned int>(value.z * SHARC_RADIANCE_SCALE)
     );
 
-    atomicAdd(&voxelDataBuffer[cacheEntry].x, scaledRadiance.x);
-    atomicAdd(&voxelDataBuffer[cacheEntry].y, scaledRadiance.y);
-    atomicAdd(&voxelDataBuffer[cacheEntry].z, scaledRadiance.z);
-    atomicAdd(&voxelDataBuffer[cacheEntry].w, sampleData);
+    if (scaledRadiance.x != 0) atomicAdd(&(BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry).x), scaledRadiance.x);
+    if (scaledRadiance.y != 0) atomicAdd(&(BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry).y), scaledRadiance.y);
+    if (scaledRadiance.z != 0) atomicAdd(&(BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry).z), scaledRadiance.z);
+    if (sampleData != 0) atomicAdd(&(BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry).w), sampleData);
 }
 
 struct SharcState {
@@ -180,17 +174,16 @@ __host__ __device__ inline void SharcInit(SharcState& sharcState) {
     #endif
 }
 
-__device__ void SharcUpdateMiss(SharcState& sharcState, const float3& radiance) {
+__device__ void SharcUpdateMiss(SharcState& sharcState, float3& radiance) {
 #if SHARC_UPDATE
-    float3 currentRadiance = radiance;
     for (int i = 0; i < sharcState.pathLength; ++i) {
-        currentRadiance = currentRadiance* sharcState.sampleWeight[i];
-        SharcAddVoxelData(sharcState.voxelDataBuffer, sharcState.cacheEntry[i], currentRadiance, 0);
+        radiance = radiance* sharcState.sampleWeight[i];
+        SharcAddVoxelData(sharcState.voxelDataBuffer, sharcState.cacheEntry[i], radiance, 0);
     }
 #endif // SHARC_UPDATE
 }
 
-__device__ bool SharcUpdateHit(SharcState& sharcState, const SharcHitData& sharcHitData, float3 lighting, float random) {
+__device__ bool SharcUpdateHit(SharcState& sharcState, SharcHitData& sharcHitData, float3 lighting, float random) {
     bool continueTracing = true;
 #if SHARC_UPDATE
     CacheEntry cacheEntry = HashMapInsertEntry(sharcState.hashMapData, sharcHitData.positionWorld, sharcHitData.normalWorld, sharcState.gridParameters);
@@ -215,30 +208,30 @@ __device__ bool SharcUpdateHit(SharcState& sharcState, const SharcHitData& sharc
 #if SHARC_SEPARATE_EMISSIVE
     sharcRadiance += sharcHitData.emissive;
 #endif // SHARC_SEPARATE_EMISSIVE
-
-    for (uint i = 0; i < sharcState.pathLength; ++i) {
+    uint i;
+    for ( i = 0; i < sharcState.pathLength; ++i) {
         sharcRadiance = sharcRadiance*sharcState.sampleWeight[i];
         SharcAddVoxelData(sharcState.voxelDataBuffer, sharcState.cacheEntry[i], sharcRadiance, 0);
     }
 
-    for (uint i = sharcState.pathLength; i > 0; --i) {
+    for (i = sharcState.pathLength; i > 0; --i) {
         sharcState.cacheEntry[i] = sharcState.cacheEntry[i - 1];
         sharcState.sampleWeight[i] = sharcState.sampleWeight[i - 1];
     }
 
     sharcState.cacheEntry[0] = cacheEntry;
-    sharcState.pathLength = min(sharcState.pathLength + 1, (unsigned int)SHARC_PROPOGATION_DEPTH - 1);
+    sharcState.pathLength = min(++sharcState.pathLength, (unsigned int)SHARC_PROPOGATION_DEPTH - 1);
 #endif // SHARC_UPDATE
     return continueTracing;
 }
 
-__device__ void SharcSetThroughput(SharcState& sharcState, const float3& throughput) {
+__device__ void SharcSetThroughput(SharcState& sharcState, float3& throughput) {
 #if SHARC_UPDATE
     sharcState.sampleWeight[0] = throughput;
 #endif // SHARC_UPDATE
 }
 
-__device__ bool SharcGetCachedRadiance(const SharcState& sharcState, const SharcHitData& sharcHitData, float3& radiance, bool debug) {
+__device__ bool SharcGetCachedRadiance(SharcState& sharcState, SharcHitData& sharcHitData, float3& radiance, bool debug) {
     if (debug) radiance = make_float3(0.0f, 0.0f, 0.0f);
     const uint sampleThreshold = debug ? 0 : SHARC_SAMPLE_NUM_THRESHOLD;
 
@@ -278,11 +271,11 @@ __device__ void SharcCopyHashEntry(uint entryIndex, HashMapData hashMapData, uin
 #endif // SHARC_DEFERRED_HASH_COMPACTION
 }
 
-__device__ int SharcGetGridDistance2(const int3& position) {
+__device__ int SharcGetGridDistance2( int3& position) {
     return position.x * position.x + position.y * position.y + position.z * position.z;
 }
 
-__device__ HashKey SharcGetAdjacentLevelHashKey(HashKey hashKey, const GridParameters& gridParameters) {
+__device__ HashKey SharcGetAdjacentLevelHashKey(HashKey hashKey, GridParameters& gridParameters) {
     const int signBit = 1 << (HASH_GRID_POSITION_BIT_NUM - 1);
     const int signMask = ~((1 << HASH_GRID_POSITION_BIT_NUM) - 1);
 

@@ -147,7 +147,8 @@ __host__ __device__ inline int4 CalculateGridPositionLog(float3 samplePosition, 
 
 // Compute spatial hash
 __host__ __device__ inline HashKey ComputeSpatialHash(float3 samplePosition, float3 sampleNormal, GridParameters gridParameters) {
-    int4 gridPosition = CalculateGridPositionLog(samplePosition, gridParameters);
+    int4 gridPositionInt = CalculateGridPositionLog(samplePosition, gridParameters);
+    uint4 gridPosition = make_uint4(uint(gridPositionInt.x), uint(gridPositionInt.y), uint(gridPositionInt.z), uint(gridPositionInt.w));
 
     HashKey hashKey = ((uint64_t(gridPosition.x) & HASH_GRID_POSITION_BIT_MASK) << (HASH_GRID_POSITION_BIT_NUM * 0))
                     | ((uint64_t(gridPosition.y) & HASH_GRID_POSITION_BIT_MASK) << (HASH_GRID_POSITION_BIT_NUM * 1))
@@ -206,8 +207,7 @@ __device__ inline void HashMapAtomicCompareExchange(
     uint64_t& originalValue) 
 {
 #if HASH_GRID_ENABLE_64_BIT_ATOMICS
-    atomicCAS(&BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, dstOffset), compareValue, value);
-    originalValue = BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, dstOffset);
+    originalValue = atomicCAS(&BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, dstOffset), compareValue, value);
 #else
     const uint cLock = 0xAAAAAAAA;
     uint fuse = 0;
@@ -241,8 +241,8 @@ __device__ inline bool HashMapInsert(
 {
     uint hash = Hash32(hashKey);
     uint slot = hash % hashMapData.capacity;
+    HashKey prevHashKey = HASH_GRID_INVALID_HASH_KEY;
     uint baseSlot = GetBaseSlot(slot, hashMapData.capacity);
-    uint64_t prevHashKey = HASH_GRID_INVALID_HASH_KEY;
 
     for (uint bucketOffset = 0; bucketOffset < HASH_GRID_HASH_MAP_BUCKET_SIZE; ++bucketOffset) {
         HashMapAtomicCompareExchange(hashMapData, baseSlot + bucketOffset, HASH_GRID_INVALID_HASH_KEY, hashKey, prevHashKey);
@@ -253,7 +253,7 @@ __device__ inline bool HashMapInsert(
         }
     }
 
-    cacheEntry = HASH_GRID_INVALID_CACHE_ENTRY;
+    cacheEntry = 0;
     return false;
 }
 
@@ -285,15 +285,15 @@ __host__ __device__ inline bool HashMapFind(
 }
 
 // Insert Entry
-__device__ inline uint HashMapInsertEntry(
+__device__ inline CacheEntry HashMapInsertEntry(
     HashMapData& hashMapData, 
     const float3 samplePosition, 
     const float3 sampleNormal, 
     GridParameters& gridParameters) 
 {
     uint cacheEntry = HASH_GRID_INVALID_CACHE_ENTRY;
-    uint64_t hashKey = ComputeSpatialHash(samplePosition, sampleNormal, gridParameters);
-    HashMapInsert(hashMapData, hashKey, cacheEntry);
+    const HashKey hashKey = ComputeSpatialHash(samplePosition, sampleNormal, gridParameters);
+    bool successful = HashMapInsert(hashMapData, hashKey, cacheEntry);
     return cacheEntry;
 }
 

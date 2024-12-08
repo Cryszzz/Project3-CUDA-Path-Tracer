@@ -471,6 +471,7 @@ __global__ void shadeFakeMaterial(
 )
 {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	bool update = depth%2==0;
 	if (idx < num_paths)
 	{	
 		ShadeableIntersection intersection = shadeableIntersections[idx];
@@ -483,9 +484,12 @@ __global__ void shadeFakeMaterial(
 			sharcHitData.positionWorld = glmToFloat3(ray.origin + ray.direction * intersection.t);
 			sharcHitData.normalWorld = glmToFloat3(intersection.surfaceNormal);
 		  	
-		  	if (ENABLE_CACHE) {
+		  	if (ENABLE_CACHE && !update) {
+				uint gridLevel = GetGridLevel(glmToFloat3(ray.origin + ray.direction * intersection.t), sharcState.gridParameters);
+                float voxelSize = GetVoxelSize(gridLevel, sharcState.gridParameters);
+				bool isValidHit = intersection.t > voxelSize * sqrt(3.0f);
                 float3 cachedRadiance;
-                if (SharcGetCachedRadiance(sharcState, sharcHitData, cachedRadiance, false)) {
+                if (isValidHit&&SharcGetCachedRadiance(sharcState, sharcHitData, cachedRadiance, false))  {
                     pathSegments[idx].color *= float3ToGlm(cachedRadiance);
                     pathSegments[idx].remainingBounces = 0; // Terminate path
                     return;
@@ -501,7 +505,7 @@ __global__ void shadeFakeMaterial(
 			if (intersection.materialId == 5)
 				int test = 1;
 			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,textPixel,back,geoms[gidx],LightArea[index],shading);
-			if (ENABLE_CACHE) {
+			if (ENABLE_CACHE && update) {
 				//SharcUpdateHit(sharcState, sparseHitData, glmToFloat3(pathSegments[idx].color), rng());
 				SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), rng());
 				//int breaker = 0;
@@ -515,7 +519,7 @@ __global__ void shadeFakeMaterial(
 		else {
 			pathSegments[idx].color *= back;
 			pathSegments[idx].remainingBounces=0;
-			if (ENABLE_CACHE) {
+			if (ENABLE_CACHE && update) {
 				SharcUpdateMiss(sharcState,  glmToFloat3(pathSegments[idx].color));
 			}
 		}
@@ -691,7 +695,6 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 	setfinalbuffer<<<numBlocksPixels, blockSize1d>>>(num_paths,finalbuffer);
 	//thrust::device_vector<int> dev_thrust_out(pixelcount);
 	while (!iterationComplete) {
-
 		// clean shading chunks
 		cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 		SharcInit(sharcState);
@@ -754,7 +757,7 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 
 		shadeFakeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
 			iter,
-			traceDepth-depth,
+			depth,
 			num_paths,
 			dev_intersections,
 			dev_paths,
