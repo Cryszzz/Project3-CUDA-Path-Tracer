@@ -1,4 +1,4 @@
-//THE CODE BELOW IS TRANSLATED FROM HLSL/GLSL TO CUDA C++, ORIGINAL CODE FROM NVIDIA CORPORATION
+//THE CODE BELOW IS TRANSLATED FROM HLSL/GLSL TO CUDA C++, ORIGINAL CODE FROM NVIDIA :https://github.com/NVIDIAGameWorks/SHARC
 
 #ifndef HASHGRIDCOMMON_H
 #define HASHGRIDCOMMON_H
@@ -74,6 +74,10 @@ __host__ __device__ float3 operator/(const float3& a, const float& b) {
     return make_float3(a.x / b, a.y / b, a.z / b);
 }
 
+__host__ __device__ float dot(const float3& a, const float3& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
 template <typename T>
 __host__ __device__ inline T clamp(T value, T minValue, T maxValue) {
     return (value < minValue) ? minValue : (value > maxValue) ? maxValue : value;
@@ -86,6 +90,15 @@ __host__ __device__ inline int3 floor(const float3& vec) {
 template <typename T>
 __host__ __device__ inline T lerp(T v0, T v1, T t) {
     return v0 + t * (v1 - v0);
+}
+
+inline __device__ __host__ uint3 lerp(float3 a, float3 b, float t)
+{
+    return make_uint3(
+        static_cast<uint>(a.x + t * (b.x - a.x)),
+        static_cast<uint>(a.y + t * (b.y - a.y)),
+        static_cast<uint>(a.z + t * (b.z - a.z))
+    );
 }
 
 // Logarithm base function

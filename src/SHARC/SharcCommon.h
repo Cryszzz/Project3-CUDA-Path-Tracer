@@ -1,32 +1,10 @@
-//THE CODE BELOW IS TRANSLATED FROM HLSL/GLSL TO CUDA C++, ORIGINAL CODE FROM NVIDIA CORPORATION
-
-/*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION. All rights reserved.
- *
- * NVIDIA CORPORATION and its licensors retain all intellectual property
- * and proprietary rights in and to this software, related documentation
- * and any modifications thereto.  Any use, reproduction, disclosure or
- * distribution of this software and related documentation without an express
- * license agreement from NVIDIA CORPORATION is strictly prohibited.
- */
+//THE CODE BELOW IS TRANSLATED FROM HLSL/GLSL TO CUDA C++, ORIGINAL CODE FROM NVIDIA :https://github.com/NVIDIAGameWorks/SHARC
 
 // Version definitions
 #define SHARC_VERSION_MAJOR                 1
 #define SHARC_VERSION_MINOR                 3
 #define SHARC_VERSION_BUILD                 1
 #define SHARC_VERSION_REVISION              0
-
-// Define SHARC_UPDATE and SHARC_QUERY based on their states
-#if (SHARC_UPDATE || SHARC_QUERY)
-    #if SHARC_UPDATE
-        #define SHARC_QUERY 0
-    #else
-        #define SHARC_UPDATE 0
-    #endif
-#else
-    #define SHARC_QUERY 0
-    #define SHARC_UPDATE 0
-#endif
 
 // Constants for SHARC
 #define SHARC_SAMPLE_NUM_MULTIPLIER             16
@@ -70,7 +48,27 @@
 
 // Includes
 #include "HashGridCommon.h"
-#include <device_functions.h>
+
+#ifdef __CUDACC__
+    #define InterlockedAdd(address, value) atomicAdd(address, value)
+#endif
+
+#ifdef __CUDACC__
+    #define InterlockedCompareExchange(address, compare, value) atomicCAS(address, compare, value)
+#endif
+
+// Warp-synchronous operations for CUDA
+#define FULL_MASK 0xFFFFFFFF
+
+// Count active bits in the warp ballot
+#define WaveActiveCountBits(value) __popc(__ballot_sync(FULL_MASK, value))
+
+// Perform a warp-wide ballot, returning a bitmask
+#define WaveActiveBallot(value) __ballot_sync(FULL_MASK, value)
+
+// Compute the prefix count (exclusive) of active bits up to the current thread in the warp
+#define WavePrefixCountBits(value) __popc(__ballot_sync(FULL_MASK, value) & ((1U << threadIdx.x) - 1))
+
 
 // Structures
 struct SharcVoxelData {
@@ -126,16 +124,9 @@ __host__ __device__ inline SharcVoxelData SharcGetVoxelData(uint4* voxelDataBuff
         return voxelData;
     }
 
-    // Fetch packed data from buffer
-    uint4 voxelDataPacked = voxelDataBuffer[cacheEntry];
+    uint4 voxelDataPacked = BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry);
 
-    // Unpack and return the voxel data
-    voxelData.accumulatedRadiance = make_uint3(voxelDataPacked.x, voxelDataPacked.y, voxelDataPacked.z);
-    voxelData.accumulatedSampleNum = (voxelDataPacked.w >> SHARC_SAMPLE_NUM_BIT_OFFSET) & SHARC_SAMPLE_NUM_BIT_MASK;
-    voxelData.accumulatedFrameNum = (voxelDataPacked.w >> SHARC_ACCUMULATED_FRAME_NUM_BIT_OFFSET) & SHARC_ACCUMULATED_FRAME_NUM_BIT_MASK;
-    voxelData.staleFrameNum = (voxelDataPacked.w >> SHARC_STALE_FRAME_NUM_BIT_OFFSET) & SHARC_STALE_FRAME_NUM_BIT_MASK;
-
-    return voxelData;
+    return SharcUnpackVoxelData(voxelDataPacked);
 }
 
 // Additional utility functions
@@ -150,10 +141,10 @@ __device__ inline void SharcAddVoxelData(
         static_cast<unsigned int>(value.z * SHARC_RADIANCE_SCALE)
     );
 
-    atomicAdd(&voxelDataBuffer[cacheEntry].x, scaledRadiance.x);
-    atomicAdd(&voxelDataBuffer[cacheEntry].y, scaledRadiance.y);
-    atomicAdd(&voxelDataBuffer[cacheEntry].z, scaledRadiance.z);
-    atomicAdd(&voxelDataBuffer[cacheEntry].w, sampleData);
+    if (scaledRadiance.x != 0) atomicAdd(&voxelDataBuffer[cacheEntry].x, scaledRadiance.x);
+    if (scaledRadiance.y != 0) atomicAdd(&voxelDataBuffer[cacheEntry].y, scaledRadiance.y);
+    if (scaledRadiance.z != 0) atomicAdd(&voxelDataBuffer[cacheEntry].z, scaledRadiance.z);
+    if (sampleData != 0) atomicAdd(&voxelDataBuffer[cacheEntry].w, sampleData);
 }
 
 struct SharcState {
@@ -213,7 +204,7 @@ __device__ bool SharcUpdateHit(SharcState& sharcState, const SharcHitData& sharc
     }
 
 #if SHARC_SEPARATE_EMISSIVE
-    sharcRadiance += sharcHitData.emissive;
+    sharcRadiance = sharcRadiance+sharcHitData.emissive;
 #endif // SHARC_SEPARATE_EMISSIVE
 
     for (uint i = 0; i < sharcState.pathLength; ++i) {
@@ -227,7 +218,7 @@ __device__ bool SharcUpdateHit(SharcState& sharcState, const SharcHitData& sharc
     }
 
     sharcState.cacheEntry[0] = cacheEntry;
-    sharcState.pathLength = min(sharcState.pathLength + 1, (unsigned int)SHARC_PROPOGATION_DEPTH - 1);
+    sharcState.pathLength = min(++sharcState.pathLength, (unsigned int)SHARC_PROPOGATION_DEPTH - 1);
 #endif // SHARC_UPDATE
     return continueTracing;
 }
@@ -252,7 +243,7 @@ __device__ bool SharcGetCachedRadiance(const SharcState& sharcState, const Sharc
         radiance = SharcResolveAccumulatedRadiance(voxelData.accumulatedRadiance, voxelData.accumulatedSampleNum);
 
 #if SHARC_SEPARATE_EMISSIVE
-        radiance += sharcHitData.emissive;
+        radiance = radiance+ sharcHitData.emissive;
 #endif // SHARC_SEPARATE_EMISSIVE
 
         return true;
@@ -260,21 +251,27 @@ __device__ bool SharcGetCachedRadiance(const SharcState& sharcState, const Sharc
     return false;
 }
 
-__device__ void SharcCopyHashEntry(uint entryIndex, HashMapData hashMapData, uint* copyOffsetBuffer) {
+__device__ void SharcCopyHashEntry(uint entryIndex, HashMapData hashMapData, RW_STRUCTURED_BUFFER(copyOffsetBuffer, uint)) {
 #if SHARC_DEFERRED_HASH_COMPACTION
-    if (entryIndex >= hashMapData.capacity) return;
+    if (entryIndex >= hashMapData.capacity)
+        return;
 
-    uint copyOffset = copyOffsetBuffer[entryIndex];
-    if (copyOffset == 0) return;
+    uint copyOffset = BUFFER_AT_OFFSET(copyOffsetBuffer, entryIndex);
+    if (copyOffset == 0)
+        return;
 
-    if (copyOffset == HASH_GRID_INVALID_CACHE_ENTRY) {
-        hashMapData.hashEntriesBuffer[entryIndex] = HASH_GRID_INVALID_HASH_KEY;
-    } else {
-        HashKey hashKey = hashMapData.hashEntriesBuffer[entryIndex];
-        hashMapData.hashEntriesBuffer[entryIndex] = HASH_GRID_INVALID_HASH_KEY;
-        hashMapData.hashEntriesBuffer[copyOffset] = hashKey;
+    if (copyOffset == HASH_GRID_INVALID_CACHE_ENTRY)
+    {
+        BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, entryIndex) = HASH_GRID_INVALID_HASH_KEY;
     }
-    copyOffsetBuffer[entryIndex] = 0;
+    else if (copyOffset != 0)
+    {
+        HashKey hashKey = BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, entryIndex);
+        BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, entryIndex) = HASH_GRID_INVALID_HASH_KEY;
+        BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, copyOffset) = hashKey;
+    }
+
+    BUFFER_AT_OFFSET(copyOffsetBuffer, entryIndex) = 0;
 #endif // SHARC_DEFERRED_HASH_COMPACTION
 }
 
@@ -326,65 +323,149 @@ __device__ HashKey SharcGetAdjacentLevelHashKey(HashKey hashKey, const GridParam
 
 
 
-// Resolve accumulated radiance
-__host__ __device__ inline bool SharcResolveEntry(
-    uint entryIndex, GridParameters gridParameters, HashMapData hashMapData,
-    uint4* voxelDataBuffer, uint4* voxelDataBufferPrev, uint accumulationFrameNum, uint staleFrameNumMax) {
+__device__ void SharcResolveEntry(uint entryIndex, GridParameters gridParameters, HashMapData hashMapData, RW_STRUCTURED_BUFFER(copyOffsetBuffer, uint),
+    RW_STRUCTURED_BUFFER(voxelDataBuffer, uint4), RW_STRUCTURED_BUFFER(voxelDataBufferPrev, uint4), uint accumulationFrameNum, uint staleFrameNumMax)
+{
     if (entryIndex >= hashMapData.capacity)
-        return false;
+        return;
 
-    HashKey hashKey = hashMapData.hashEntriesBuffer[entryIndex];
+    HashKey hashKey = BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, entryIndex);
     if (hashKey == HASH_GRID_INVALID_HASH_KEY)
-        return false;
+        return;
 
-    uint4 voxelDataPackedPrev = voxelDataBufferPrev[entryIndex];
-    uint4 voxelDataPacked = voxelDataBuffer[entryIndex];
+    uint4 voxelDataPackedPrev = BUFFER_AT_OFFSET(voxelDataBufferPrev, entryIndex);
+    uint4 voxelDataPacked = BUFFER_AT_OFFSET(voxelDataBuffer, entryIndex);
 
     uint sampleNum = SharcGetSampleNum(voxelDataPacked.w);
     uint sampleNumPrev = SharcGetSampleNum(voxelDataPackedPrev.w);
     uint accumulatedFrameNum = SharcGetAccumulatedFrameNum(voxelDataPackedPrev.w);
     uint staleFrameNum = SharcGetStaleFrameNum(voxelDataPackedPrev.w);
 
-    uint3 accumulatedRadiance = make_uint3(
-        voxelDataPacked.x * SHARC_SAMPLE_NUM_MULTIPLIER + voxelDataPackedPrev.x,
-        voxelDataPacked.y * SHARC_SAMPLE_NUM_MULTIPLIER + voxelDataPackedPrev.y,
-        voxelDataPacked.z * SHARC_SAMPLE_NUM_MULTIPLIER + voxelDataPackedPrev.z
-    );
+    uint3 accumulatedRadiance = make_uint3(voxelDataPacked.x* SHARC_SAMPLE_NUM_MULTIPLIER+ voxelDataPackedPrev.x, voxelDataPacked.y* SHARC_SAMPLE_NUM_MULTIPLIER+voxelDataPackedPrev.y, voxelDataPacked.z* SHARC_SAMPLE_NUM_MULTIPLIER+voxelDataPackedPrev.z);
+    uint accumulatedSampleNum = SharcGetSampleNum(voxelDataPacked.w) * SHARC_SAMPLE_NUM_MULTIPLIER + SharcGetSampleNum(voxelDataPackedPrev.w);
 
-    uint accumulatedSampleNum = sampleNum * SHARC_SAMPLE_NUM_MULTIPLIER + sampleNumPrev;
+#if SHARC_BLEND_ADJACENT_LEVELS
+    // Reproject sample from adjacent level
+    float3 cameraOffset = make_float3(gridParameters.cameraPosition.x - gridParameters.cameraPositionPrev.x,
+                                      gridParameters.cameraPosition.y - gridParameters.cameraPositionPrev.y,
+                                      gridParameters.cameraPosition.z - gridParameters.cameraPositionPrev.z);
+    if ((dot(cameraOffset, cameraOffset) != 0) && (accumulatedFrameNum < accumulationFrameNum))
+    {
+        HashKey adjacentLevelHashKey = SharcGetAdjacentLevelHashKey(hashKey, gridParameters);
 
-    // Clamp to avoid overflow
-    if (accumulatedSampleNum > SHARC_NORMALIZED_SAMPLE_NUM) {
-        accumulatedSampleNum >>= 1;
-        accumulatedRadiance.x >>= 1;
-        accumulatedRadiance.y >>= 1;
-        accumulatedRadiance.z >>= 1;
+        CacheEntry cacheEntry = HASH_GRID_INVALID_CACHE_ENTRY;
+        if (HashMapFind(hashMapData, adjacentLevelHashKey, cacheEntry))
+        {
+            uint4 adjacentPackedDataPrev = BUFFER_AT_OFFSET(voxelDataBufferPrev, cacheEntry);
+            uint adjacentSampleNum = SharcGetSampleNum(adjacentPackedDataPrev.w);
+            if (adjacentSampleNum > SHARC_SAMPLE_NUM_THRESHOLD)
+            {
+                float blendWeight = adjacentSampleNum / float(adjacentSampleNum + accumulatedSampleNum);
+                accumulatedRadiance = lerp(make_float3(accumulatedRadiance.x, accumulatedRadiance.y, accumulatedRadiance.z), make_float3(adjacentPackedDataPrev.x, adjacentPackedDataPrev.y, adjacentPackedDataPrev.z), blendWeight);
+                accumulatedSampleNum = uint(lerp(float(accumulatedSampleNum), float(adjacentSampleNum), blendWeight));
+            }
+        }
+    }
+#endif // SHARC_BLEND_ADJACENT_LEVELS
+
+    // Clamp internal sample count to help with potential overflow
+    if (accumulatedSampleNum > SHARC_NORMALIZED_SAMPLE_NUM)
+    {
+        accumulatedSampleNum = accumulatedSampleNum>>1;
+        accumulatedRadiance.x = accumulatedRadiance.x >> 1;
+        accumulatedRadiance.y = accumulatedRadiance.y >> 1;
+        accumulatedRadiance.z = accumulatedRadiance.z >> 1;
     }
 
-    // Update accumulation frame and stale frame numbers
-    accumulatedFrameNum = clamp(
-        accumulatedFrameNum,
-        static_cast<uint>(SHARC_ACCUMULATED_FRAME_NUM_MIN),
-        static_cast<uint>(SHARC_ACCUMULATED_FRAME_NUM_MAX)
-    );
+    accumulationFrameNum = max(min(accumulationFrameNum, (unsigned int)SHARC_ACCUMULATED_FRAME_NUM_MAX), (unsigned int)SHARC_ACCUMULATED_FRAME_NUM_MIN);
+    if (accumulatedFrameNum > accumulationFrameNum)
+    {
+        float normalizedAccumulatedSampleNum = round(accumulatedSampleNum * float(accumulationFrameNum) / accumulatedFrameNum);
+        float normalizationScale = normalizedAccumulatedSampleNum / accumulatedSampleNum;
+
+        accumulatedSampleNum = uint(normalizedAccumulatedSampleNum);
+        accumulatedRadiance = make_uint3(accumulatedRadiance.x * normalizationScale, accumulatedRadiance.y * normalizationScale, accumulatedRadiance.z * normalizationScale);
+        accumulatedFrameNum = uint(accumulatedFrameNum * normalizationScale);
+    }
+
     ++accumulatedFrameNum;
     staleFrameNum = (sampleNum != 0) ? 0 : staleFrameNum + 1;
 
-    // Pack data
-    uint4 packedData = make_uint4(accumulatedRadiance.x, accumulatedRadiance.y, accumulatedRadiance.z,
-                                  (min(accumulatedSampleNum, SHARC_SAMPLE_NUM_BIT_MASK) |
-                                   (min(accumulatedFrameNum, SHARC_ACCUMULATED_FRAME_NUM_BIT_MASK) << SHARC_ACCUMULATED_FRAME_NUM_BIT_OFFSET) |
-                                   (min(staleFrameNum, SHARC_STALE_FRAME_NUM_BIT_MASK) << SHARC_STALE_FRAME_NUM_BIT_OFFSET)));
+    uint4 packedData;
+    packedData.x = accumulatedRadiance.x;
+    packedData.y = accumulatedRadiance.y;
+    packedData.z = accumulatedRadiance.z;
 
-    // Update the buffer with valid or invalid data
-    if (staleFrameNum >= max(staleFrameNumMax, (unsigned int)SHARC_STALE_FRAME_NUM_MIN)) {
-        voxelDataBuffer[entryIndex] = make_uint4(0, 0, 0, 0);
-        return false;
-    } else {
-        voxelDataBuffer[entryIndex] = packedData;
-        return true;
+    packedData.w = min(accumulatedSampleNum, SHARC_SAMPLE_NUM_BIT_MASK);
+    packedData.w |= (min(accumulatedFrameNum, SHARC_ACCUMULATED_FRAME_NUM_BIT_MASK) << SHARC_ACCUMULATED_FRAME_NUM_BIT_OFFSET);
+    packedData.w |= (min(staleFrameNum, SHARC_STALE_FRAME_NUM_BIT_MASK) << SHARC_STALE_FRAME_NUM_BIT_OFFSET);
+
+    bool isValidElement = (staleFrameNum < max(staleFrameNumMax, SHARC_STALE_FRAME_NUM_MIN)) ? true : false;
+
+    if (!isValidElement)
+    {
+        packedData = make_uint4(0, 0, 0, 0);
+#if !SHARC_ENABLE_COMPACTION
+        BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, entryIndex) = HASH_GRID_INVALID_HASH_KEY;
+#endif // !SHARC_ENABLE_COMPACTION
     }
+
+#if SHARC_ENABLE_COMPACTION
+    uint validElementNum = WaveActiveCountBits(isValidElement);
+    uint validElementMask = WaveActiveBallot(isValidElement);
+    bool isMovableElement = isValidElement && ((entryIndex % HASH_GRID_HASH_MAP_BUCKET_SIZE) >= validElementNum);
+    uint movableElementIndex = WavePrefixCountBits(isMovableElement);
+
+    if ((entryIndex % HASH_GRID_HASH_MAP_BUCKET_SIZE) >= validElementNum)
+    {
+        uint writeOffset = 0;
+#if !SHARC_DEFERRED_HASH_COMPACTION
+        hashMapData.hashEntriesBuffer[entryIndex] = HASH_GRID_INVALID_HASH_KEY;
+#endif // !SHARC_DEFERRED_HASH_COMPACTION
+
+        BUFFER_AT_OFFSET(voxelDataBuffer, entryIndex) = make_uint4(0, 0, 0, 0);
+
+        if (isValidElement)
+        {
+            uint emptySlotIndex = 0;
+            while (emptySlotIndex < validElementNum)
+            {
+                if (((validElementMask >> writeOffset) & 0x1) == 0)
+                {
+                    if (emptySlotIndex == movableElementIndex)
+                    {
+                        writeOffset += GetBaseSlot(entryIndex, hashMapData.capacity);
+#if !SHARC_DEFERRED_HASH_COMPACTION
+                        hashMapData.hashEntriesBuffer[writeOffset] = hashKey;
+#endif // !SHARC_DEFERRED_HASH_COMPACTION
+
+                        BUFFER_AT_OFFSET(voxelDataBuffer, writeOffset) = packedData;
+                        break;
+                    }
+
+                    ++emptySlotIndex;
+                }
+
+                ++writeOffset;
+            }
+        }
+
+#if SHARC_DEFERRED_HASH_COMPACTION
+        BUFFER_AT_OFFSET(copyOffsetBuffer, entryIndex) = (writeOffset != 0) ? writeOffset : HASH_GRID_INVALID_CACHE_ENTRY;
+#endif // SHARC_DEFERRED_HASH_COMPACTION
+    }
+    else if (isValidElement)
+#endif // SHARC_ENABLE_COMPACTION
+    {
+        BUFFER_AT_OFFSET(voxelDataBuffer, entryIndex) = packedData;
+    }
+
+#if !SHARC_BLEND_ADJACENT_LEVELS
+    // Clear buffer entry for the next frame
+    //BUFFER_AT_OFFSET(voxelDataBufferPrev, entryIndex) = uint4(0, 0, 0, 0);
+#endif // !SHARC_BLEND_ADJACENT_LEVELS
 }
+
 
 // Debugging utility functions
 __host__ __device__ inline float3 SharcDebugGetBitsOccupancyColor(float occupancy) {
@@ -414,7 +495,7 @@ __host__ __device__ inline float3 SharcDebugBitsOccupancyRadiance(
     CacheEntry cacheEntry = HashMapFindEntry(
         sharcState.hashMapData, sharcHitData.positionWorld, sharcHitData.normalWorld, sharcState.gridParameters);
     SharcVoxelData voxelData = SharcGetVoxelData(sharcState.voxelDataBuffer, cacheEntry);
-
+    
     float maxRadiance = fmaxf(voxelData.accumulatedRadiance.x,
         fmaxf(voxelData.accumulatedRadiance.y, voxelData.accumulatedRadiance.z));
     float occupancy = maxRadiance / 0xffffffff;
