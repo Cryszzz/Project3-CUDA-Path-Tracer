@@ -23,7 +23,7 @@
 #define SHARC_QUERY 1
 #define ENABLE_CACHE 1 //SHARC ENABLE CACHE
 #include "SHARC/SharcCommon.h"
-#define RussianRoulette 1
+#define RussianRoulette 0
 #define ERRORCHECK 1
 #define STACKSIZE 16384 //262144
 
@@ -477,6 +477,7 @@ __global__ void shadeFakeMaterial(
 )
 {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	bool updateCache = depth%2==0;
 	if (idx < num_paths)
 	{	
 		ShadeableIntersection intersection = shadeableIntersections[idx];
@@ -489,7 +490,7 @@ __global__ void shadeFakeMaterial(
 			sharcHitData.positionWorld = glmToFloat3(ray.origin + ray.direction * intersection.t);
 			sharcHitData.normalWorld = glmToFloat3(intersection.surfaceNormal);
 		  	glm::vec3 throughput = glm::vec3(1.0f);
-		  	if (ENABLE_CACHE) {
+		  	if (ENABLE_CACHE&&!updateCache) {
 				uint gridLevel = GetGridLevel(glmToFloat3(ray.origin + ray.direction * intersection.t), sharcState.gridParameters);
                 float voxelSize = GetVoxelSize(gridLevel, sharcState.gridParameters);
 				bool isValidHit = intersection.t > voxelSize * sqrt(3.0f);
@@ -511,7 +512,7 @@ __global__ void shadeFakeMaterial(
 			if (intersection.materialId == 5)
 				int test = 1;
 			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,textPixel,back,geoms[gidx],LightArea[index],shading,throughput);
-			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0) {
+			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0&&updateCache) {
 				//SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng));
 				//sharcHitData.emissive = glmToFloat3(materials[intersection.materialId].emittance*materials[intersection.materialId].color);
 				if(!SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng))){
@@ -532,7 +533,7 @@ __global__ void shadeFakeMaterial(
 					}
 				}
 			}
-			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0) {
+			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0&&updateCache) {
 				SharcSetThroughput(sharcState, glmToFloat3(throughput*(0.5f)));
 			}
 			// If the material indicates that the object was a light, "light" the ray
@@ -542,9 +543,9 @@ __global__ void shadeFakeMaterial(
 			// This can be useful for post-processing and image compositing.
 		}
 		else {
-			pathSegments[idx].color *= back;
+			pathSegments[idx].color *= back*5.0f;
 			pathSegments[idx].remainingBounces=0;
-			if (ENABLE_CACHE) {
+			if (ENABLE_CACHE&&updateCache) {
 				SharcUpdateMiss(sharcState,  glmToFloat3(back));
 			}
 		}
@@ -876,11 +877,11 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		const int threadsPerBlock = 256;
 		const int blocks = (sharcState.hashMapData.capacity + threadsPerBlock - 1) / threadsPerBlock;
 		// SHaRC Resolve Kernel
-		/*sharcResolveKernel << <blocks, threadsPerBlock >> >(
+		sharcResolveKernel << <blocks, threadsPerBlock >> >(
 			dev_voxelDataBuffer, dev_voxelDataBufferPrev, dev_hashEntriesBuffer, 
 			dev_copyOffsetBuffer, glmToFloat3(cam.position), 
 			sharcState.gridParameters.cameraPosition, sharcState.gridParameters.sceneScale, 
-			sharcState.hashMapData.capacity, 10, 64);*/
+			sharcState.hashMapData.capacity, 10, 64);
 		cudaDeviceSynchronize();
 		checkCUDAError("sharcResolveKernel");
 		
@@ -888,9 +889,9 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		sharcState.gridParameters.cameraPosition = glmToFloat3(cam.position);
 		
 		// SHaRC Compaction Kernel
-		/*sharcCompactionKernel << <blocks, threadsPerBlock >> >(
+		sharcCompactionKernel << <blocks, threadsPerBlock >> >(
 			dev_hashEntriesBuffer, dev_copyOffsetBuffer, sharcState.hashMapData.capacity);
-		cudaDeviceSynchronize();*/
+		cudaDeviceSynchronize();
 		checkCUDAError("sharcCompactionKernel");
 	}
 	
