@@ -12,8 +12,8 @@ static double lastX;
 static double lastY;
 
 static bool camchanged = true;
-static bool withFBC = true;
-static bool alias = false;
+static bool withFBC = false;
+static bool alias = true;
 static bool sortmat = true;
 static bool bvh = true;
 static int shading = 0;

@@ -85,7 +85,7 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
 		pbo[index].z = color.z;
 	}
 }
-
+static size_t bufferSize = (1 << 22); // Example: 2^22 entries
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
 static glm::vec3* dev_image = NULL;
@@ -165,7 +165,7 @@ void pathtraceInit(Scene* scene) {
 	cudaMalloc(&dev_pathR, pixelcount * sizeof(PathSegment));
 
 	// SHaRC buffer allocations
-	size_t bufferSize = (1 << 22); // Example: 2^22 entries
+	
 	cudaMalloc(&dev_voxelDataBuffer, bufferSize * sizeof(uint4));
 	cudaMalloc(&dev_voxelDataBufferPrev, bufferSize * sizeof(uint4));
 	cudaMalloc(&dev_hashEntriesBuffer, bufferSize * sizeof(uint64_t));
@@ -674,7 +674,11 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter,traceDepth, dev_paths,Antialiasing);
 	}
 	
-	
+	if (ENABLE_CACHE) {
+		dev_voxelDataBufferPrev=dev_voxelDataBuffer;
+		cudaMemset(dev_voxelDataBuffer, 0, bufferSize * sizeof(uint4));
+		//cudaMemset(dev_voxelDataBufferPrev, 0, bufferSize * sizeof(uint4));
+	}
 	int depth = 0;
 	PathSegment* dev_path_end = dev_paths + pixelcount;
 	int num_paths = dev_path_end - dev_paths;
