@@ -4,10 +4,9 @@
 #define HASHGRIDCOMMON_H
 
 #include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
 #include <device_launch_parameters.h>
 #include <cmath>
-#include "helper_math.h"
+#include <vector_functions.h>
 
 #define HASH_GRID_POSITION_BIT_NUM          17
 #define HASH_GRID_POSITION_BIT_MASK         ((1u << HASH_GRID_POSITION_BIT_NUM) - 1)
@@ -41,9 +40,6 @@
 #define BUFFER_AT_OFFSET(buffer, offset) buffer[offset]
 #endif
 
-#ifndef uint
-#define uint unsigned int
-#endif
 
 #define RW_STRUCTURED_BUFFER(name, type) type* name
 
@@ -54,6 +50,29 @@ struct GridParameters {
     float sceneScale;
 };
 
+__host__ __device__ float3 operator-(const float3& a, const float3& b) {
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__host__ __device__ int3 operator-(const int3& a, const int3& b) {
+    return make_int3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__host__ __device__ float3 operator+(const float3& a, const float3& b) {
+    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__host__ __device__ float3 operator*(const float3& a, const float3& b) {
+    return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
+__host__ __device__ float3 operator*(const float3& a, const float& b) {
+    return make_float3(a.x * b, a.y * b, a.z * b);
+}
+
+__host__ __device__ float3 operator/(const float3& a, const float& b) {
+    return make_float3(a.x / b, a.y / b, a.z / b);
+}
 
 template <typename T>
 __host__ __device__ inline T clamp(T value, T minValue, T maxValue) {
@@ -62,6 +81,11 @@ __host__ __device__ inline T clamp(T value, T minValue, T maxValue) {
 
 __host__ __device__ inline int3 floor(const float3& vec) {
     return make_int3(floor(vec.x), floor(vec.y), floor(vec.z));
+}
+
+template <typename T>
+__host__ __device__ inline T lerp(T v0, T v1, T t) {
+    return v0 + t * (v1 - v0);
 }
 
 // Logarithm base function

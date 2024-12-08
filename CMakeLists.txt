@@ -76,7 +76,6 @@ set(headers
     src/ImGui/imconfig.h
     src/SHARC/SharcCommon.h
     src/SHARC/HashGridCommon.h
-    src/SHARC/helper_math.h
 	
 	src/ImGui/imgui.h
     src/ImGui/imconfig.h

@@ -3,17 +3,6 @@
         "xstring": "cpp",
         "ostream": "cpp",
         "cmath": "cpp",
-        "vector": "cpp",
-        "algorithm": "cpp",
-        "functional": "cpp",
-        "optional": "cpp",
-        "system_error": "cpp",
-        "type_traits": "cpp",
-        "xlocmon": "cpp",
-        "xtr1common": "cpp",
-        "xutility": "cpp",
-        "limits": "cpp",
-        "tuple": "cpp",
-        "xlocale": "cpp"
+        "vector": "cpp"
     }
 }
