@@ -7,7 +7,7 @@
  * Computes a cosine-weighted random direction in a hemisphere.
  * Used for diffuse lighting.
  */
-__host__ __device__
+__device__
 glm::vec3 calculateRandomDirectionInHemisphere(
         glm::vec3 normal, thrust::default_random_engine &rng,float exponent) {
     thrust::uniform_real_distribution<float> u01(0, 1);
@@ -41,7 +41,7 @@ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
-__host__ __device__
+__device__
 float reflectance(float cosine, float ref_idx) {
     // Use Schlick's approximation for reflectance.
     float r0 = (1.0f-ref_idx) / (1.0f+ref_idx);
@@ -49,14 +49,14 @@ float reflectance(float cosine, float ref_idx) {
     return r0 + (1.0f-r0)*pow((1.0f - cosine),5.0f);
 }
 
-__host__ __device__
+__device__
 glm::vec3 refract(glm::vec3& uv, glm::vec3& n, float etai_over_etat) {
     float cos_theta = glm::min(dot(-uv, n), 1.0f);
     glm::vec3 r_out_perp =  etai_over_etat * (uv + cos_theta*n);
     glm::vec3 r_out_parallel = -glm::sqrt(glm::abs(1.0f - glm::length2(r_out_perp))) * n;
     return r_out_perp + r_out_parallel;
 }
-__host__ __device__
+__device__
 void sampleLight(glm::vec3 &dist,Geom & light,
     float & lightsize,thrust::default_random_engine &rng,float &pdf,glm::vec3& orig){
     thrust::uniform_real_distribution<float> u01(0, 1);
@@ -89,70 +89,91 @@ float computeG(glm::vec3 w,glm::vec3 normal,float expoenent){
     }
 }
 
-__host__ __device__
+__device__
 void diffuseScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,thrust::default_random_engine &rng, Geom & light,
-    float & lightsize){
+    float & lightsize, glm::vec3 &throughput){
     float cos=glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
     thrust::uniform_real_distribution<float> u01(0, 1);
     float r2=u01(rng);
-    pathSegment.throughput *= materialColor * (glm::dot(pathSegment.ray.direction, intersection.surfaceNormal) / TWO_PI);
+    throughput *= materialColor/PI;
     pathSegment.color *= materialColor;
     pathSegment.remainingBounces--;
     pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
-    pathSegment.ray.direction=glm::normalize(calculateRandomDirectionInHemisphere(intersection.surfaceNormal,rng,1.0f));
+    /*if(r2<0.5f){
+        glm::vec3 dist;
+        float pdf;
+        sampleLight(dist,light,lightsize,rng,pdf,pathSegment.ray.origin);
+
+        pathSegment.ray.direction=glm::normalize(dist-pathSegment.ray.origin);
+        pathSegment.color*=glm::abs(glm::dot(pathSegment.ray.direction, intersection.surfaceNormal))/PI;
+        pathSegment.remainingBounces=1;
+        //float pdf=glm::length2(dist-pathSegment.ray.origin)/cos;
+        //pathSegment.color/=pdf;
+    }else{*/
+        pathSegment.ray.direction=glm::normalize(calculateRandomDirectionInHemisphere(intersection.surfaceNormal,rng,1.0f));
+    //}
     
 }
 
-__host__ __device__
+__device__
 void refractScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
-     glm::vec3 &materialColor,const float ior,thrust::default_random_engine &rng){
+     glm::vec3 &materialColor,const float ior,thrust::default_random_engine &rng, glm::vec3 &throughput){
     thrust::uniform_real_distribution<float> u01(0, 1);
-    float refractionRatio = intersection.outside ? (1.0f / ior) : ior;
-    float cosTheta = glm::min(glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal), 1.0f);
-    bool cannotRefract = ((glm::sqrt(1.0f - cosTheta * cosTheta) * refractionRatio) > 1.0f);
-
-    float fresnelReflectance = reflectance(cosTheta, refractionRatio);
-    bool reflect = cannotRefract || (fresnelReflectance > u01(rng));
-
-    if (reflect) {
-        pathSegment.ray.origin = getPointOnRay(pathSegment.ray, intersection.t);
-        pathSegment.ray.direction = glm::reflect(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
-        pathSegment.throughput *= materialColor * fresnelReflectance; // Adjust throughput for reflection
-    } else {
-        pathSegment.ray.origin = getPointOnRay(pathSegment.ray, intersection.t + 0.0002f);
-        pathSegment.ray.direction = glm::refract(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal, refractionRatio);
-        pathSegment.throughput *= materialColor * (1.0f - fresnelReflectance); // Adjust throughput for transmission
+    float refraction_ratio = intersection.outside ? (1.0f/ior):(ior);
+    float cos_theta = glm::min(glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal), 1.0f);
+    bool cannot_refract = ((glm::sqrt(1.0f - cos_theta * cos_theta)*refraction_ratio ) > 1.0f);
+    float fresnel = reflectance(cos_theta, refraction_ratio);
+    if (cannot_refract|| fresnel>u01(rng)){
+        //pathSegment.color *= glm::vec3(1.0f)-reflectance(cos_theta, refraction_ratio);
+        pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
+        pathSegment.ray.direction=glm::reflect(glm::normalize(pathSegment.ray.direction),intersection.surfaceNormal);
+        throughput *= fresnel*materialColor/abs(glm::dot(pathSegment.ray.direction,intersection.surfaceNormal));
     }
-    pathSegment.remainingBounces--;
+    else{
+        //pathSegment.color *= glm::vec3(1.0f)-reflectance(cos_theta, refraction_ratio);
+        pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t+0.0002f);
+        pathSegment.ray.direction =glm::refract(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal, refraction_ratio);
+        throughput *= (1.0f-fresnel)*(1.0f-fresnel)/abs(glm::dot(pathSegment.ray.direction,intersection.surfaceNormal));
+    }
+    pathSegment.remainingBounces--; 
 }
 
-__host__ __device__
+ __device__
 void specularScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
-    float & lightsize){
+    float & lightsize, glm::vec3 &throughput){
     thrust::uniform_real_distribution<float> u01(0, 1);
-    pathSegment.color *= materialColor; // Update color by material reflectivity
-
-    glm::vec3 reflected = glm::reflect(glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
-    pathSegment.ray.direction = glm::normalize(calculateRandomDirectionInHemisphere(reflected, rng, exponent));
-    pathSegment.throughput *= materialColor * glm::pow(glm::dot(pathSegment.ray.direction, reflected), exponent);
+    float r2=u01(rng);
+    float cos=glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal);
+    pathSegment.color *= materialColor;
     pathSegment.remainingBounces--;
+    pathSegment.ray.origin=getPointOnRay(pathSegment.ray, intersection.t);
+    /*if(r2<0.5f){
+        glm::vec3 dist;
+        float pdf;
+        sampleLight(dist,light,lightsize,rng,pdf,pathSegment.ray.origin);
 
-    pathSegment.ray.origin = getPointOnRay(pathSegment.ray, intersection.t);
-
-    if (glm::dot(pathSegment.ray.direction, intersection.surfaceNormal) < 0) {
-        pathSegment.remainingBounces = 0; // Terminate path
-        pathSegment.color = glm::vec3(0.0f);
+        pathSegment.ray.direction=glm::normalize(dist-pathSegment.ray.origin);
+        //pathSegment.color*=(exponent+1)*pow(glm::abs(glm::dot(pathSegment.ray.direction, intersection.surfaceNormal)),exponent)/TWO_PI;
+        pathSegment.remainingBounces=1;
+    }else{*/
+        glm::vec3 reflected=glm::reflect(pathSegment.ray.direction,intersection.surfaceNormal);
+        pathSegment.ray.direction = glm::normalize(calculateRandomDirectionInHemisphere(reflected,rng,exponent));
+    throughput *= materialColor/abs(glm::dot(pathSegment.ray.direction,intersection.surfaceNormal));
+    
+    if(dot(pathSegment.ray.direction,intersection.surfaceNormal)<0){
+        pathSegment.remainingBounces=0;
+        pathSegment.color=glm::vec3(0.0f);
         return;
     }
     
 }
 
-__host__ __device__
+__device__
 void blinnScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
@@ -178,7 +199,7 @@ void blinnScatter(PathSegment & pathSegment,
     
 }
 
-__host__ __device__
+__device__
 void blinnMicScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
@@ -206,7 +227,7 @@ void blinnMicScatter(PathSegment & pathSegment,
     
 }
 
-__host__ __device__
+__device__
 void diffuseMicScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,thrust::default_random_engine &rng, Geom & light,
@@ -260,17 +281,18 @@ void diffuseMicScatter(PathSegment & pathSegment,
  *
  * You may need to change the parameter list for your purposes!
  */
-__host__ __device__
+__device__
 void scatterRay(
     PathSegment& pathSegment,
     ShadeableIntersection& intersection,
     Material& m,
     thrust::default_random_engine& rng,
-    glm::vec3* textPixel,
+    cudaTextureObject_t* texts,
     glm::vec3 back,
     Geom & light,
     float & lightsize,
-    int shading) {
+    int shading,
+    glm::vec3& throughput) {
     thrust::uniform_real_distribution<float> u01(0, 1);
     // TODO: implement this.
     // A basic implementation of pure-diffuse shading will just call the
@@ -283,18 +305,14 @@ void scatterRay(
     }
 
     glm::vec3 materialColor=m.color;
-    if(m.dimg!=-1){
-        int x=(int)(intersection.uv.x*m.dwidth);
-        int y=(int)((1.0f-intersection.uv.y)*m.dheight);
-        int imgidx= y*m.dwidth+x+m.dimgidx;
-        materialColor=textPixel[imgidx];
+    if(m.texture.diffuseID!=-1){
+        float4 texColor = tex2D<float4>(texts[m.texture.diffuseID],intersection.uv.x, 1.0f-intersection.uv.y);
+        materialColor=glm::vec3(texColor.x,texColor.y,texColor.z);
     }
     
-    if(m.nimg!=-1){
-        int x=(int)(intersection.uv.x*m.nwidth);
-        int y=(int)((1.0f-intersection.uv.y)*m.nheight);
-        int imgidx= y*m.nwidth+x+m.nimgidx;
-        glm::vec3 Bump=textPixel[imgidx];
+    if(m.texture.normalID!=-1){
+        float4 texColor = tex2D<float4>(texts[m.texture.normalID],intersection.uv.x, 1.0f-intersection.uv.y);
+        glm::vec3 Bump=glm::vec3(texColor.x,texColor.y,texColor.z);
         Bump=glm::normalize(2.0f*Bump-glm::vec3(1.0f));
         intersection.surfaceNormal=glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);
         //glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);
@@ -306,17 +324,16 @@ void scatterRay(
     }else{
         float r1=u01(rng);
         if(r1<m.hasRefractive){
-            refractScatter(pathSegment,intersection,materialColor,m.indexOfRefraction,rng);
+            refractScatter(pathSegment,intersection,materialColor,m.indexOfRefraction,rng,throughput);
         }else if(r1<m.hasReflective+m.hasRefractive){
             if(shading==0)
-                specularScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize);
+                specularScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize,throughput);
             else if(shading==1)
                 blinnScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize);
             else
                 blinnMicScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize);
         }else{
-            diffuseScatter(pathSegment,intersection,materialColor,rng,light,lightsize);
+            diffuseScatter(pathSegment,intersection,materialColor,rng,light,lightsize,throughput);
         } 
     }
-
 }

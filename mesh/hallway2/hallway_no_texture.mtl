@@ -11,6 +11,7 @@ Ni 1.450000
 d 1.000000
 illum 2
 map_Kd Textures/Floor/Floor_Base_Color.png
+norm Textures/Floor/Floor_Normal.png
 
 newmtl Ladder
 Ns 250.000000
@@ -22,6 +23,7 @@ Ni 1.450000
 d 1.000000
 illum 2
 map_Kd Textures/Ladder/Ladder_Base_Color.png
+norm Textures/Ladder/Ladder_Normal_OpenGL.jpg
 
 newmtl Roof
 Ns 250.000000
@@ -33,6 +35,7 @@ Ni 1.450000
 d 1.000000
 illum 2
 map_Kd Textures/Roof/Roof_Base_Color.png
+norm Textures/Roof/Roof_Normal.jpg
 
 newmtl Wall
 Ns 250.000000
@@ -44,6 +47,7 @@ Ni 1.450000
 d 1.000000
 illum 2
 map_Kd Textures/Wall/Wall_Base_Color.png
+norm Textures/Wall/Wall_Normal_OpenGL.jpg
 
 newmtl Windows
 Ns 250.000000
@@ -55,3 +59,4 @@ Ni 1.450000
 d 1.000000
 illum 2
 map_Kd Textures/Windows/Windows_Base_Color.png
+norm Textures/Windows/Windows_Normal_OpenGL.jpg

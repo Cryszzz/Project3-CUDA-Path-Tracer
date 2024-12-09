@@ -53,6 +53,19 @@ struct BVHnode {
     int geom;
 };
 
+struct MyTexture{
+	int width;
+	int height;
+	int numComponents;
+    int size;
+	std::vector<glm::vec4> data; 
+};
+
+struct TextID{
+    int diffuseID;
+    int normalID;
+};
+
 struct Material {
     glm::vec3 color;
     struct {
@@ -63,14 +76,7 @@ struct Material {
     float hasRefractive;
     float indexOfRefraction;
     float emittance;
-    int dimg;
-    int dheight;
-    int dwidth;
-    int dimgidx;
-    int nimg;
-    int nheight;
-    int nwidth;
-    int nimgidx;
+    TextID texture;
 };
 
 struct Camera {

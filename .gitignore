@@ -198,7 +198,6 @@ install_manifest.txt
 # Compiled Dynamic libraries
 *.so
 *.dylib
-*.dll
 
 # Fortran module files
 *.mod
@@ -207,7 +206,6 @@ install_manifest.txt
 *.lai
 *.la
 *.a
-*.lib
 
 # Executables
 *.exe
@@ -246,7 +244,7 @@ x64/
 x86/
 build/
 bld/
-[Bb]in/
+
 [Oo]bj/
 
 # Visual Studio 2015 cache/options directory
@@ -495,7 +493,6 @@ crashlytics-build.properties
 *.pydevproject
 .metadata
 .gradle
-bin/
 tmp/
 *.tmp
 *.bak

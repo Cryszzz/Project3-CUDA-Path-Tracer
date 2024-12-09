@@ -16,17 +16,17 @@
 #include "pathtrace.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "OpenImageDenoise/oidn.hpp"
 
 #define SHARC_ENABLE_64_BIT_ATOMICS 1
 #define HASH_GRID_ENABLE_64_BIT_ATOMICS 1
 #define SHARC_UPDATE 1
 #define SHARC_QUERY 1
-#define ENABLE_CACHE 1
+#define ENABLE_CACHE 1 //SHARC ENABLE CACHE
 #include "SHARC/SharcCommon.h"
-
 #define RussianRoulette 1
-
 #define ERRORCHECK 1
+#define DENOISE 1
 #define STACKSIZE 16384 //262144
 
 __host__ __device__ inline float3 glmToFloat3(const glm::vec3& vec) {
@@ -35,6 +35,11 @@ __host__ __device__ inline float3 glmToFloat3(const glm::vec3& vec) {
 
 __host__ __device__ inline glm::vec3 float3ToGlm(const float3& vec) {
     return glm::vec3(vec.x, vec.y, vec.z);
+}
+
+__host__ __device__
+float computeLuminance(const glm::vec3& color) {
+    return 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
 }
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
@@ -65,11 +70,6 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
 	return thrust::default_random_engine(h);
 }
 
-__host__ __device__
-float computeLuminance(const glm::vec3& color) {
-    return 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
-}
-
 //Kernel that writes the image to the OpenGL PBO directly.
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
 	int iter, glm::vec3* image) {
@@ -93,6 +93,7 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
 	}
 }
 
+static size_t bufferSize = (1 << 22); // Example: 2^22 entries
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
 static glm::vec3* dev_image = NULL;
@@ -108,7 +109,8 @@ static PathSegment* finalbuffer;
 static ShadeableIntersection* firstBounce = NULL;
 static PathSegment* firstBounceP=NULL;
 static BVHnode* dev_tree=NULL;
-static glm::vec3* textimgpixel=NULL;
+static cudaTextureObject_t* dev_texture_objects = NULL;
+static int textureSize=0;
 static int* dev_lights=NULL;
 static float* dev_lights_area=NULL;
 // SHaRC state and buffers
@@ -117,6 +119,9 @@ static uint4* dev_voxelDataBuffer;
 static uint4* dev_voxelDataBufferPrev;
 static uint64_t* dev_hashEntriesBuffer;
 static uint* dev_copyOffsetBuffer;
+static glm::vec3* dev_normalImage;
+static glm::vec3* dev_albedoImage;
+
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
 
@@ -133,6 +138,10 @@ void pathtraceInit(Scene* scene) {
 
 	cudaMalloc(&dev_image, pixelcount * sizeof(glm::vec3));
 	cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
+	cudaMalloc(&dev_normalImage, pixelcount * sizeof(glm::vec3));
+	cudaMemset(dev_normalImage, 0, pixelcount * sizeof(glm::vec3));
+	cudaMalloc(&dev_albedoImage, pixelcount * sizeof(glm::vec3));
+	cudaMemset(dev_albedoImage, 0, pixelcount * sizeof(glm::vec3));
 
 	cudaMalloc(&dev_paths, pixelcount * sizeof(PathSegment));
 
@@ -148,8 +157,34 @@ void pathtraceInit(Scene* scene) {
 	//textimgcnt = scene->imgtextwh.size();
 	//cudaMemcpy(textimgcnt, ,sizeof(int), cudaMemcpyHostToDevice);
 
-	cudaMalloc(&textimgpixel, scene->imgtext.size() * sizeof(glm::vec3));
-	cudaMemcpy(textimgpixel, scene->imgtext.data(), scene->imgtext.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	cudaMalloc(&dev_texture_objects, scene->textures.size() * sizeof(cudaTextureObject_t));
+
+    // Allocate and copy textures
+	textureSize = scene->textures.size();
+    for (int i = 0; i < scene->textures.size(); ++i) {
+		const MyTexture& texture = scene->textures[i];
+        cudaArray_t dev_texture;
+        cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 32, 32, 32, cudaChannelFormatKindFloat);
+        cudaMallocArray(&dev_texture, &channelDesc, texture.width, texture.height);
+		cudaMemcpy2DToArray(dev_texture, 0, 0, texture.data.data(), texture.width * sizeof(float4), texture.width * sizeof(float4), texture.height, cudaMemcpyHostToDevice);
+
+        // Create texture object
+        cudaResourceDesc resDesc = {};
+        resDesc.resType = cudaResourceTypeArray;
+        resDesc.res.array.array = dev_texture;
+
+        cudaTextureDesc texDesc = {};
+        texDesc.addressMode[0] = cudaAddressModeWrap;
+        texDesc.addressMode[1] = cudaAddressModeWrap;
+        texDesc.filterMode = cudaFilterModeLinear;
+        texDesc.readMode = cudaReadModeElementType;
+        texDesc.normalizedCoords = 1;
+
+        cudaTextureObject_t texObj = 0;
+        cudaCreateTextureObject(&texObj, &resDesc, &texDesc, nullptr);
+
+		cudaMemcpy(dev_texture_objects + i, &texObj, sizeof(cudaTextureObject_t), cudaMemcpyHostToDevice);
+    }
 
 
 	cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
@@ -171,7 +206,7 @@ void pathtraceInit(Scene* scene) {
 	cudaMalloc(&dev_pathR, pixelcount * sizeof(PathSegment));
 
 	// SHaRC buffer allocations
-	size_t bufferSize = (1 <<22); // Example: 2^22 entries
+	
 	cudaMalloc(&dev_voxelDataBuffer, bufferSize * sizeof(uint4));
 	cudaMalloc(&dev_voxelDataBufferPrev, bufferSize * sizeof(uint4));
 	cudaMalloc(&dev_hashEntriesBuffer, bufferSize * sizeof(uint64_t));
@@ -207,8 +242,15 @@ void pathtraceFree() {
 	cudaFree(firstBounceP);
 	cudaFree(dev_keys);
 	cudaFree(finalbuffer);
-	cudaFree(textimgpixel);
-	//cudaFree(textimgidx);
+	if (dev_texture_objects != NULL) {
+        for (int i = 0; i < textureSize; ++i) {
+			cudaTextureObject_t texObj;
+			cudaMemcpy(&texObj, dev_texture_objects + i, sizeof(cudaTextureObject_t), cudaMemcpyDeviceToHost);
+			cudaDestroyTextureObject(texObj);
+        }
+    }
+	cudaFree(dev_normalImage);
+	cudaFree(dev_albedoImage);
 
 	// Free SHaRC buffers
 	cudaFree(dev_voxelDataBuffer);
@@ -241,7 +283,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 
 		segment.ray.origin = cam.position;
 		segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
-		segment.throughput = glm::vec3(1.0f, 1.0f, 1.0f);
+		segment.throughput=glm::vec3(1.0f);
 		// TODO: implement antialiasing by jittering the ray
 		//+u01(rng1)-0.5f
 		//+u01(rng0)-0.5f
@@ -452,6 +494,67 @@ __global__ void computeIntersectionsBVH(
 	}
 }
 
+void denoiseImage(const std::vector<glm::vec3>* inputImage, 
+    const std::vector<glm::vec3>* albedoImage,
+	const std::vector<glm::vec3>* normalImage,
+    std::vector<glm::vec3>* outputImage, 
+    int numPixels, glm::ivec2 camResolution)
+{
+    const char* errorMessage;
+    oidn::DeviceRef device = oidn::newDevice();
+	device.commit();
+
+	oidn::BufferRef colorBuf = device.newBuffer(camResolution.x * camResolution.y * 3 * sizeof(float)); // beauty buffer
+	oidn::BufferRef albedoBuf = device.newBuffer(camResolution.x * camResolution.y * 3 * sizeof(float)); // albedo buffer
+	oidn::BufferRef normalBuf = device.newBuffer(camResolution.x * camResolution.y * 3 * sizeof(float)); // normal buffer
+
+
+	oidn::FilterRef filter = device.newFilter("RT");
+    filter.setImage("color", colorBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+	filter.setImage("albedo", albedoBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+	filter.setImage("normal", normalBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+    filter.setImage("output", colorBuf, oidn::Format::Float3, camResolution.x, camResolution.y);
+    filter.set("hdr", true);
+    filter.commit();
+    if (device.getError(errorMessage) != oidn::Error::None)
+        std::cerr << "Error: " << errorMessage << std::endl;
+
+    float* colorPtr = (float*)colorBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		colorPtr[i * 3] = (*inputImage)[i].x;
+		colorPtr[i * 3 + 1] = (*inputImage)[i].y;
+		colorPtr[i * 3 + 2] = (*inputImage)[i].z;
+	}
+
+	float* albedoPtr = (float*)albedoBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		albedoPtr[i * 3] = (*albedoImage)[i].x;
+		albedoPtr[i * 3 + 1] = (*albedoImage)[i].y;
+		albedoPtr[i * 3 + 2] = (*albedoImage)[i].z;
+	}
+
+	float* normalPtr = (float*)normalBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		glm::vec3 normal = glm::normalize((*normalImage)[i]);
+		normalPtr[i * 3] = normal.x;
+		normalPtr[i * 3 + 1] = normal.y;
+		normalPtr[i * 3 + 2] = normal.z;
+	}
+
+	filter.execute();
+
+
+    if (device.getError(errorMessage) != oidn::Error::None)
+        std::cerr << "Error: " << errorMessage << std::endl;
+
+    // copy back to outputImage
+	colorPtr = (float*)colorBuf.getData();
+	for (int i = 0; i < numPixels; ++i) {
+		(*outputImage)[i] = glm::vec3(colorPtr[i * 3], colorPtr[i * 3 + 1], colorPtr[i * 3 + 2]);
+	}
+
+}
+
 // LOOK: "fake" shader demonstrating what you might do with the info in
 // a ShadeableIntersection, as well as how to use thrust's random number
 // generator. Observe that since the thrust random number generator basically
@@ -467,9 +570,11 @@ __global__ void shadeFakeMaterial(
 	, int num_paths
 	, ShadeableIntersection* shadeableIntersections
 	, PathSegment* pathSegments
+	, glm::vec3* albedoImage
+	, glm::vec3* normalImage
 	, Material* materials
 	, glm::vec3 back
-	, glm::vec3* textPixel
+	, cudaTextureObject_t * texts
 	, Geom* geoms
 	, int* Lights
 	, float* LightArea
@@ -479,8 +584,13 @@ __global__ void shadeFakeMaterial(
 )
 {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	bool updateCache = depth%2==0;
 	if (idx < num_paths)
 	{	
+		if(depth==0){
+			albedoImage[pathSegments[idx].pixelIndex]=materials[idx].color;
+			normalImage[pathSegments[idx].pixelIndex]=shadeableIntersections[idx].surfaceNormal;
+		}
 		ShadeableIntersection intersection = shadeableIntersections[idx];
 		if (intersection.t > 0.0f) { // if the intersection exists...
 		  // Set up the RNG
@@ -490,14 +600,15 @@ __global__ void shadeFakeMaterial(
 		  	SharcHitData sharcHitData;
 			sharcHitData.positionWorld = glmToFloat3(ray.origin + ray.direction * intersection.t);
 			sharcHitData.normalWorld = glmToFloat3(intersection.surfaceNormal);
-		  	pathSegments[idx].throughput=glm::vec3(1.0f);
-
-		  	if (ENABLE_CACHE) {
+		  	glm::vec3 throughput = glm::vec3(1.0f);
+		  	if (ENABLE_CACHE&&!updateCache) {
+				uint gridLevel = GetGridLevel(glmToFloat3(ray.origin + ray.direction * intersection.t), sharcState.gridParameters);
+                float voxelSize = GetVoxelSize(gridLevel, sharcState.gridParameters);
+				bool isValidHit = intersection.t > voxelSize * sqrt(3.0f);
                 float3 cachedRadiance;
-                if (SharcGetCachedRadiance(sharcState, sharcHitData, cachedRadiance, false)) {
-					
-                    //pathSegments[idx].color *= float3ToGlm(cachedRadiance);
-					pathSegments[idx].color *= float3ToGlm(SharcDebugBitsOccupancySampleNum(sharcState, sharcHitData));
+                if (isValidHit&& SharcGetCachedRadiance(sharcState, sharcHitData, cachedRadiance, false)) {
+					//pathSegments[idx].color = float3ToGlm(SharcDebugBitsOccupancyRadiance(sharcState, sharcHitData));
+                    pathSegments[idx].color *= float3ToGlm(cachedRadiance);
                     pathSegments[idx].remainingBounces = 0; // Terminate path
                     return;
                 }
@@ -511,25 +622,31 @@ __global__ void shadeFakeMaterial(
 			int gidx=u01(rng)*(end-start)+start;
 			if (intersection.materialId == 5)
 				int test = 1;
-			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,textPixel,back,geoms[gidx],LightArea[index],shading);
-		
-			if (ENABLE_CACHE) {
-				SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng));
+			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,texts,back,geoms[gidx],LightArea[index],shading,throughput);
+			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0&&updateCache) {
+				if(!SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng))){
+					pathSegments[idx].remainingBounces = 0; // Terminate path
+					return;
+				};
 			}
-			if(RussianRoulette){
+			pathSegments[idx].throughput*= throughput;
+			if(RussianRoulette&&pathSegments[idx].remainingBounces>0){
 				if (depth > 3) {
 					float q = glm::min(1.0f, computeLuminance(pathSegments[idx].throughput));
+					float qt = glm::min(1.0f, computeLuminance(throughput));
 					thrust::uniform_real_distribution<float> u01(0, 1);
 					float randomValue = u01(rng);
 					if (randomValue > q) {
 						pathSegments[idx].remainingBounces = 0; // Terminate path
+						return;
 					}else{
-						pathSegments[idx].throughput /= q;
+						throughput /= qt;
+						pathSegments[idx].throughput/=q;
 					}
 				}
 			}
-			if (ENABLE_CACHE) {
-				//SharcSetThroughput(sharcState, glmToFloat3(pathSegments[idx].throughput));
+			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0&&updateCache) {
+				SharcSetThroughput(sharcState, glmToFloat3(throughput*(0.5f)));
 			}
 			// If the material indicates that the object was a light, "light" the ray
 			// If there was no intersection, color the ray black.
@@ -538,9 +655,9 @@ __global__ void shadeFakeMaterial(
 			// This can be useful for post-processing and image compositing.
 		}
 		else {
-			pathSegments[idx].color *= back;
+			pathSegments[idx].color *= back*5.0f;
 			pathSegments[idx].remainingBounces=0;
-			if (ENABLE_CACHE) {
+			if (ENABLE_CACHE&&updateCache) {
 				SharcUpdateMiss(sharcState,  glmToFloat3(back));
 			}
 		}
@@ -660,7 +777,7 @@ __global__ void sharcResolveKernel(
     hashMapData.capacity = capacity;
     hashMapData.hashEntriesBuffer = hashEntriesBuffer;
 
-    /*SharcResolveEntry(
+    SharcResolveEntry(
         idx, 
         gridParameters, 
         hashMapData, 
@@ -668,14 +785,28 @@ __global__ void sharcResolveKernel(
         voxelDataBuffer, 
         voxelDataBufferPrev, 
         accumulationFrameNum, 
-        staleFrameNum);*/
+        staleFrameNum);
 }
+
 
   /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
  * of memory management
  */
  /*
+void pathtrace(uchar4* pbo, int frame, int iter) {
+	const int traceDepth = hst_scene->state.traceDepth;
+	const Camera& cam = hst_scene->state.camera;
+	const int pixelcount = cam.resolution.x * cam.resolution.y;
+
+	// 2D block for generating ray from camera
+	const dim3 blockSize2d(8, 8);
+	const dim3 blocksPerGrid2d(
+		(cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
+		(cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
+
+	// 1D block for path tracing
+	const int blockSize1d = 128;
 	///////////////////////////////////////////////////////////////////////////
 
 	// Recap:
@@ -719,6 +850,13 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		(cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
 		(cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
 
+	if (ENABLE_CACHE) {
+		auto temp = dev_voxelDataBufferPrev;
+		dev_voxelDataBufferPrev = dev_voxelDataBuffer;
+		dev_voxelDataBuffer = temp;
+		cudaMemset(dev_voxelDataBuffer, 0, bufferSize * sizeof(uint4));
+		cudaMemset(dev_voxelDataBufferPrev, 0, bufferSize * sizeof(uint4));
+	}
 	// 1D block for path tracing
 	const int blockSize1d = 128;
 	if(Cache){
@@ -812,9 +950,11 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 			num_paths,
 			dev_intersections,
 			dev_paths,
+			dev_albedoImage,
+			dev_normalImage,
 			dev_materials,
 			hst_scene->backColor,
-			textimgpixel,
+			dev_texture_objects,
 			dev_geoms,
 			dev_lights,
 			dev_lights_area,
@@ -847,30 +987,59 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 		
 	
 	finalGather << <numBlocksPixels, blockSize1d >> > (pixelcount, dev_image, finalbuffer);
-	
-	
-	const int threadsPerBlock = 256;
-    const int blocks = (sharcState.hashMapData.capacity + threadsPerBlock - 1) / threadsPerBlock;
-    // SHaRC Resolve Kernel
-    /*sharcResolveKernel << <blocks, threadsPerBlock >> >(
-        dev_voxelDataBuffer, dev_voxelDataBufferPrev, dev_hashEntriesBuffer, 
-        dev_copyOffsetBuffer, glmToFloat3(cam.position), 
-        sharcState.gridParameters.cameraPosition, sharcState.gridParameters.sceneScale, 
-        sharcState.hashMapData.capacity, frame, 10);
-    cudaDeviceSynchronize();
-    checkCUDAError("sharcResolveKernel");
-	
-	sharcState.gridParameters.cameraPositionPrev = sharcState.gridParameters.cameraPosition;
-	sharcState.gridParameters.cameraPosition = glmToFloat3(cam.position);
-	
-	// SHaRC Compaction Kernel
-    sharcCompactionKernel<<<blocks, threadsPerBlock>>>(
-        dev_hashEntriesBuffer, dev_copyOffsetBuffer, sharcState.hashMapData.capacity);
-    cudaDeviceSynchronize();
-    checkCUDAError("sharcCompactionKernel");*/
-	
 
+	if(ENABLE_CACHE){
+		// SHaRC Resolve and Compaction
+		const int threadsPerBlock = 256;
+		const int blocks = (sharcState.hashMapData.capacity + threadsPerBlock - 1) / threadsPerBlock;
+		// SHaRC Resolve Kernel
+		sharcState.gridParameters.cameraPositionPrev = sharcState.gridParameters.cameraPosition;
+		sharcState.gridParameters.cameraPosition = glmToFloat3(cam.position);
+		sharcResolveKernel << <blocks, threadsPerBlock >> >(
+			dev_voxelDataBuffer, dev_voxelDataBufferPrev, dev_hashEntriesBuffer, 
+			dev_copyOffsetBuffer, sharcState.gridParameters.cameraPosition, 
+			sharcState.gridParameters.cameraPositionPrev, sharcState.gridParameters.sceneScale, 
+			sharcState.hashMapData.capacity, 5, 256);
+		cudaDeviceSynchronize();
+		checkCUDAError("sharcResolveKernel");
+		
+		
+		
+		// SHaRC Compaction Kernel
+		sharcCompactionKernel << <blocks, threadsPerBlock >> >(
+			dev_hashEntriesBuffer, dev_copyOffsetBuffer, sharcState.hashMapData.capacity);
+		cudaDeviceSynchronize();
+		checkCUDAError("sharcCompactionKernel");
+	}
+	
 	///////////////////////////////////////////////////////////////////////////
+
+	// Assemble this iteration and apply it to the image
+	if(DENOISE){
+		int interval = 10;
+		if (iter % interval == 0 || iter == hst_scene->state.iterations) {
+			// copy image data to host memory
+			// beauty buffer
+			std::vector<glm::vec3> hst_image = std::vector<glm::vec3>(pixelcount);
+			std::vector<glm::vec3> hst_image_post = std::vector<glm::vec3>(pixelcount);
+			cudaMemcpy(hst_image.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			cudaMemcpy(hst_image_post.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			// albedo buffer
+			std::vector<glm::vec3> hst_albedoImage = std::vector<glm::vec3>(pixelcount);
+			cudaMemcpy(hst_albedoImage.data(), dev_albedoImage, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			// normal buffer
+			std::vector<glm::vec3> hst_normalImage = std::vector<glm::vec3>(pixelcount);
+			cudaMemcpy(hst_normalImage.data(), dev_normalImage, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+			cudaDeviceSynchronize();
+			// denoise
+			denoiseImage(&hst_image, &hst_albedoImage, &hst_normalImage, &hst_image_post, pixelcount, cam.resolution);
+			// copy back to device memory
+			cudaMemcpy(dev_image, hst_image_post.data(), pixelcount * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+			cudaDeviceSynchronize();
+		}
+    }
 
 	// Send results to OpenGL buffer for rendering
 	sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);

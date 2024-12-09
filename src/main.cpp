@@ -12,9 +12,9 @@ static double lastX;
 static double lastY;
 
 static bool camchanged = true;
-static bool withFBC = true;
-static bool alias = false;
-static bool sortmat = true;
+static bool withFBC = false;
+static bool alias = true;
+static bool sortmat = false;
 static bool bvh = true;
 static int shading = 0;
 static float dtheta = 0, dphi = 0;
