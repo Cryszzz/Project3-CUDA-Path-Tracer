@@ -109,7 +109,8 @@ static PathSegment* finalbuffer;
 static ShadeableIntersection* firstBounce = NULL;
 static PathSegment* firstBounceP=NULL;
 static BVHnode* dev_tree=NULL;
-static glm::vec3* textimgpixel=NULL;
+static cudaTextureObject_t* dev_texture_objects = NULL;
+static int textureSize=0;
 static int* dev_lights=NULL;
 static float* dev_lights_area=NULL;
 // SHaRC state and buffers
@@ -156,8 +157,34 @@ void pathtraceInit(Scene* scene) {
 	//textimgcnt = scene->imgtextwh.size();
 	//cudaMemcpy(textimgcnt, ,sizeof(int), cudaMemcpyHostToDevice);
 
-	cudaMalloc(&textimgpixel, scene->imgtext.size() * sizeof(glm::vec3));
-	cudaMemcpy(textimgpixel, scene->imgtext.data(), scene->imgtext.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+	cudaMalloc(&dev_texture_objects, scene->textures.size() * sizeof(cudaTextureObject_t));
+
+    // Allocate and copy textures
+	textureSize = scene->textures.size();
+    for (int i = 0; i < scene->textures.size(); ++i) {
+		const MyTexture& texture = scene->textures[i];
+        cudaArray_t dev_texture;
+        cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 32, 32, 32, cudaChannelFormatKindFloat);
+        cudaMallocArray(&dev_texture, &channelDesc, texture.width, texture.height);
+		cudaMemcpy2DToArray(dev_texture, 0, 0, texture.data.data(), texture.width * sizeof(float4), texture.width * sizeof(float4), texture.height, cudaMemcpyHostToDevice);
+
+        // Create texture object
+        cudaResourceDesc resDesc = {};
+        resDesc.resType = cudaResourceTypeArray;
+        resDesc.res.array.array = dev_texture;
+
+        cudaTextureDesc texDesc = {};
+        texDesc.addressMode[0] = cudaAddressModeWrap;
+        texDesc.addressMode[1] = cudaAddressModeWrap;
+        texDesc.filterMode = cudaFilterModeLinear;
+        texDesc.readMode = cudaReadModeElementType;
+        texDesc.normalizedCoords = 1;
+
+        cudaTextureObject_t texObj = 0;
+        cudaCreateTextureObject(&texObj, &resDesc, &texDesc, nullptr);
+
+		cudaMemcpy(dev_texture_objects + i, &texObj, sizeof(cudaTextureObject_t), cudaMemcpyHostToDevice);
+    }
 
 
 	cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
@@ -215,8 +242,13 @@ void pathtraceFree() {
 	cudaFree(firstBounceP);
 	cudaFree(dev_keys);
 	cudaFree(finalbuffer);
-	cudaFree(textimgpixel);
-	//cudaFree(textimgidx);
+	if (dev_texture_objects != NULL) {
+        for (int i = 0; i < textureSize; ++i) {
+			cudaTextureObject_t texObj;
+			cudaMemcpy(&texObj, dev_texture_objects + i, sizeof(cudaTextureObject_t), cudaMemcpyDeviceToHost);
+			cudaDestroyTextureObject(texObj);
+        }
+    }
 	cudaFree(dev_normalImage);
 	cudaFree(dev_albedoImage);
 
@@ -542,7 +574,7 @@ __global__ void shadeFakeMaterial(
 	, glm::vec3* normalImage
 	, Material* materials
 	, glm::vec3 back
-	, glm::vec3* textPixel
+	, cudaTextureObject_t * texts
 	, Geom* geoms
 	, int* Lights
 	, float* LightArea
@@ -590,7 +622,7 @@ __global__ void shadeFakeMaterial(
 			int gidx=u01(rng)*(end-start)+start;
 			if (intersection.materialId == 5)
 				int test = 1;
-			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,textPixel,back,geoms[gidx],LightArea[index],shading,throughput);
+			scatterRay(pathSegments[idx],intersection,materials[intersection.materialId],rng,texts,back,geoms[gidx],LightArea[index],shading,throughput);
 			if (ENABLE_CACHE&&pathSegments[idx].remainingBounces>0&&updateCache) {
 				if(!SharcUpdateHit(sharcState, sharcHitData, glmToFloat3(pathSegments[idx].color), u01(rng))){
 					pathSegments[idx].remainingBounces = 0; // Terminate path
@@ -922,7 +954,7 @@ void pathtraceSortMatWCacheBVH(uchar4* pbo, int frame, int iter,bool Cache, bool
 			dev_normalImage,
 			dev_materials,
 			hst_scene->backColor,
-			textimgpixel,
+			dev_texture_objects,
 			dev_geoms,
 			dev_lights,
 			dev_lights_area,

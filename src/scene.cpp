@@ -5,6 +5,8 @@
 #include <glm/gtx/string_cast.hpp>
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
+#include <stb_image_write.h>
+#include <stb_image.h>
 
 void printvec3(glm::vec3 vec){
     cout<<vec.x<<" "<<vec.y<<" " <<vec.z<<endl;
@@ -138,6 +140,41 @@ void buildBVH(std::vector<BVHnode> &BVH, std::vector<Geom>& geoms){
     //printBVH(BVH,geoms);
 }
 
+// Load Texture
+MyTexture Scene::loadTexture(const std::string& textureFile) {
+    MyTexture texture;
+    int width, height, numComponents;
+
+    // Load image data
+    unsigned char* data = stbi_load(textureFile.c_str(), &width, &height, &numComponents, 0);
+
+    if (data!=NULL) {
+        texture.width = width;
+        texture.height = height;
+        texture.numComponents = 4; // Force RGBA for consistency
+        texture.size = width * height * 4;
+
+        for (int i = 0; i < width * height; ++i) {
+            // Fetch pixel components with padding for missing channels
+            float r = (numComponents > 0) ? data[i * numComponents + 0] / 255.0f : 0.0f;
+            float g = (numComponents > 1) ? data[i * numComponents + 1] / 255.0f : 0.0f;
+            float b = (numComponents > 2) ? data[i * numComponents + 2] / 255.0f : 0.0f;
+            float a = (numComponents > 3) ? data[i * numComponents + 3] / 255.0f : 1.0f;
+
+            // Push padded pixel to texture data
+            texture.data.push_back(glm::vec4(r, g, b, a));
+        }
+
+        stbi_image_free(data);
+    } else {
+        std::cerr << "Failed to load texture: " << textureFile << "\nReason: " 
+                << stbi_failure_reason() << std::endl;
+    }
+
+    return texture;
+
+}
+
 Scene::Scene(string filename) {
     cout << "Reading scene from " << filename << " ..." << endl;
     cout << " " << endl;
@@ -214,188 +251,134 @@ int Scene::loadGeom(string objectid) {
                     tinyobj::attrib_t attrib;
                     std::vector<tinyobj::shape_t> shapes;
                     std::vector<tinyobj::material_t> meshmaterials;
-                    std::string warn;
-                    std::string err;
-                    int materialStartIdx=materials.size();
-                    string objPrefix = line.substr(0, line.find_last_of("/") + 1);
-                    cout << "OBJ file prefix: " << objPrefix << endl;
+                    std::string warn, err;
+                    int materialStartIdx = materials.size();
+                    std::string objPrefix = line.substr(0, line.find_last_of("/") + 1);
+                    std::cout << "OBJ file prefix: " << objPrefix << std::endl;
+
                     bool ret = tinyobj::LoadObj(&attrib, &shapes, &meshmaterials, &warn, &err, line.c_str(), objPrefix.c_str());
-                    // load mesh materials
-                    std::string filePath= objPrefix;
-                    int imgIdx=0;
-                    int imgIdxPixel=0;
-                    for(auto material:meshmaterials){
-                        tinyobj::material_t matcopy = material;
+
+                    if (!warn.empty()) std::cout << "Warning: " << warn << std::endl;
+                    if (!err.empty()) std::cerr << "Error: " << err << std::endl;
+
+                    if (!ret) {
+                        std::cerr << "Failed to load OBJ: " << line << std::endl;
+                        return 0;
+                    }
+
+                    if (shapes.empty()) {
+                        std::cerr << "Error: No shapes found in OBJ file." << std::endl;
+                        return 0;
+                    }
+
+                    // Load materials
+                    for (const auto& material : meshmaterials) {
                         Material mat;
-                        glm::vec3 emissive=glm::vec3(material.emission[0],material.emission[1],material.emission[2]);
-                        
-                        cout<<"material loading "<<filePath+material.diffuse_texname<<endl;
-                        cout<<"material loading "<<filePath+material.normal_texname<<endl;
-                        if(material.diffuse_texname.empty()){
-                            //cout<<"should arrive"<<endl;
-                            mat.dimg=-1;
-                            mat.color=glm::vec3(material.diffuse[0],material.diffuse[1],material.diffuse[2]);
-                            if(material.illum==1){
-                                mat.color=glm::vec3(material.ambient[0],material.ambient[1],material.ambient[2]);
-                            }
-                            //cout<<"should arrive"<<endl;
-                        }else{
-                            //cout<<"should not arrive"<<endl;
-                            mat.dimg=imgIdx;
-                            image img=image((filePath+material.diffuse_texname).c_str());
-                            glm::vec2 dim=glm::vec2(img.getHeight(),img.getWidth());
-                            mat.dheight=(int)img.getHeight();
-                            mat.dwidth=(int)img.getWidth();
-                            mat.dimgidx=imgIdxPixel;
-                            imgIdxPixel+=img.getHeight()*img.getWidth();
-                            //cout<<dim.x<<dim.y<<endl;
-                            imgIdx++;
-                            glm::vec3* pixels = img.getPixel();
-                            imgtext.insert(imgtext.end(), pixels, pixels + img.getHeight()*img.getWidth());
-                            //cout<<imgtext.size()<<endl;
-                            //printvec3(imgtext[img.getHeight()*img.getWidth()-1]);
-                            //cout<<"should not arrive"<<endl;
+                        mat.color = glm::vec3(material.diffuse[0], material.diffuse[1], material.diffuse[2]);
+                        mat.specular.color = glm::vec3(material.specular[0], material.specular[1], material.specular[2]);
+                        mat.specular.exponent = material.shininess;
+                        mat.hasReflective = (material.illum >= 3) ? 1.0f : 0.0f;
+                        mat.hasRefractive = glm::length(glm::vec3(material.transmittance[0], material.transmittance[1], material.transmittance[2]));
+                        mat.indexOfRefraction = material.ior > 0 ? material.ior : 1.0f;
+                        mat.emittance = glm::length(glm::vec3(material.emission[0], material.emission[1], material.emission[2]));
+
+                        // Handle diffuse texture
+                        if (!material.diffuse_texname.empty()) {
+                            MyTexture diffuseTexture = loadTexture(objPrefix + material.diffuse_texname);
+                            mat.texture.diffuseID = textures.size();
+                            textures.push_back(diffuseTexture);
+                        } else {
+                            mat.texture.diffuseID = -1;
                         }
-                        if(material.normal_texname.empty()){
-                            mat.nimg=-1;
-                        }else{
-                            mat.nimg=imgIdx;
-                            image img=image((filePath+material.normal_texname).c_str());
-                            glm::vec2 dim=glm::vec2(img.getHeight(),img.getWidth());
-                            mat.nheight=(int)img.getHeight();
-                            mat.nwidth=(int)img.getWidth();
-                            mat.nimgidx=imgIdxPixel;
-                            imgIdxPixel+=img.getHeight()*img.getWidth();
-                            imgIdx++;
-                            //cout<<"text opt "<<material.bump_texopt.type<<endl;
-                            //cout<<dim.x<<dim.y<<endl;
-                            glm::vec3* pixels = img.getPixel();
-                            imgtext.insert(imgtext.end(), pixels, pixels + img.getHeight()*img.getWidth());
-                            //cout<<imgtext.size()<<endl;
+
+                        // Handle normal texture
+                        if (!material.normal_texname.empty()) {
+                            MyTexture normalTexture = loadTexture(objPrefix + material.normal_texname);
+                            mat.texture.normalID = textures.size();
+                            textures.push_back(normalTexture);
+                        } else {
+                            mat.texture.normalID = -1;
                         }
-                        if(glm::length(emissive)>0){
-                            mat.emittance=length(emissive);
+
+                        if (mat.emittance > 0.0f) {
                             lightmat.push_back(materials.size());
-                            mat.color=glm::normalize(emissive);
-                        }else{
-                            mat.emittance=0.0f;
                         }
-                        //cout<<"material loading diffuse color"<<endl;
-                        glm::vec3 scolor=glm::vec3(material.specular[0],material.specular[1],material.specular[2]);
-                        if(material.illum==1||material.illum==2){
-                            mat.hasReflective=0.0f;
-                            mat.color=glm::vec3(material.diffuse[0],material.diffuse[1],material.diffuse[2]);
-                        }else if(material.illum==3||material.illum==4){
-                            mat.hasReflective=1.0f;
-                            mat.specular.exponent=material.shininess;
-                            mat.specular.color=glm::vec3(material.specular[0],material.specular[1],material.specular[2]);
-                        }
-                        //cout<<"material loading specular"<<endl;   
-                        glm::vec3 transparency=glm::vec3(material.transmittance[0],material.transmittance[1],material.transmittance[2]);
-                        if(glm::length(transparency)>0){
-                            //cout<<"?"<<endl;
-                            //printvec3(transparency);
-                            mat.hasRefractive=glm::length(transparency);
-                            mat.indexOfRefraction=material.ior;
-                        }else{
-                            mat.hasRefractive=0.0f;
-                            mat.indexOfRefraction=1.0f;
-                        }
-                        //cout<<"material loading refraction"<<endl;   
+
                         materials.push_back(mat);
                     }
 
-                    if (!err.empty()) {
-                        printf("err: %s\n", err.c_str());
-                    }
+                    // Load shapes
+                    for (const auto& shape : shapes) {
+                        int meshStart = geoms.size();
+                        float totalArea = 0.0f;
 
-                    if (!ret) {
-                        printf("failed to load : %s\n", line.c_str());
-                        return 0;
-                    }
-                    
-                    if (shapes.size() == 0) {
-                        printf("err: # of shapes are zero.\n");
-                        return 0;
-                    }
-                    
-                    for(auto shape: shapes){
-                        
-                        int mesh_start=geoms.size();
-                        float LS=0.0f;
-                        for (int i = 0; i < shape.mesh.indices.size()/3; i++) {
+                        for (size_t i = 0; i < shape.mesh.indices.size() / 3; i++) {
                             Geom triGeom;
                             Triangle newTri;
                             BVHnode trinode;
-                            trinode.leaf=true;
-                            triGeom.type=TRIANGLE;
-                            
-                            triGeom.materialid=shape.mesh.material_ids[i]+materialStartIdx;
+                            trinode.leaf = true;
+                            triGeom.type = TRIANGLE;
+                            triGeom.materialid = shape.mesh.material_ids[i] + materialStartIdx;
+
                             for (int k = 0; k < 3; k++) {
-                                //cout << "triangle indices" <<k<< endl;
-                                glm::vec3 pos;
-                                glm::vec3 normal;
-                                glm::vec2 uv;
-                                if (shape.mesh.indices[3*i + k].vertex_index != -1) {
-                                    pos = glm::vec3(
-                                        attrib.vertices[3 * shape.mesh.indices[3*i + k].vertex_index + 0], attrib.vertices[3 * shape.mesh.indices[3*i + k].vertex_index + 1], attrib.vertices[3 * shape.mesh.indices[3*i + k].vertex_index + 2]);
-                                    newTri.vertices[k]=pos;
-                                    //printvec3(pos);
-                                }
-                                
-                                if (shape.mesh.indices[3*i + k].texcoord_index != -1) {
-                                    uv = glm::vec2(
-                                        attrib.texcoords[2* shape.mesh.indices[3*i + k].texcoord_index + 0], attrib.texcoords[2 * shape.mesh.indices[3*i + k].texcoord_index + 1]);
-                                    newTri.uvs[k]=uv;
-                                    //cout<< "uv "<<uv.x <<" "<< 1-uv.y<<endl;
+                                int vertexIndex = shape.mesh.indices[3 * i + k].vertex_index;
+                                int normalIndex = shape.mesh.indices[3 * i + k].normal_index;
+                                int texcoordIndex = shape.mesh.indices[3 * i + k].texcoord_index;
+
+                                if (vertexIndex != -1) {
+                                    newTri.vertices[k] = glm::vec3(
+                                        attrib.vertices[3 * vertexIndex + 0],
+                                        attrib.vertices[3 * vertexIndex + 1],
+                                        attrib.vertices[3 * vertexIndex + 2]
+                                    );
                                 }
 
-                                if (shape.mesh.indices[3*i + k].normal_index != -1) {
-                                    normal = glm::vec3(
-                                        attrib.normals[3* shape.mesh.indices[3 *i + k].normal_index + 0], attrib.normals[3*shape.mesh.indices[3 * i + k].normal_index + 1], attrib.normals[3*shape.mesh.indices[3 * i + k].normal_index + 2]);
-                                    newTri.normals[k]=normal;
-                                    //printvec3(normal);
-                                    //cout<<" "<<endl;
-                                    
-                                }else{
-                                    cout<<"report no normal"<<endl;
+                                if (normalIndex != -1) {
+                                    newTri.normals[k] = glm::vec3(
+                                        attrib.normals[3 * normalIndex + 0],
+                                        attrib.normals[3 * normalIndex + 1],
+                                        attrib.normals[3 * normalIndex + 2]
+                                    );
+                                }
+
+                                if (texcoordIndex != -1) {
+                                    newTri.uvs[k] = glm::vec2(
+                                        attrib.texcoords[2 * texcoordIndex + 0],
+                                        attrib.texcoords[2 * texcoordIndex + 1]
+                                    );
                                 }
                             }
-                            auto e1=newTri.vertices[0]-newTri.vertices[2];
-                            auto e2=newTri.vertices[1]-newTri.vertices[2];
-                            auto uv0=newTri.uvs[0];
-                            auto uv1=newTri.uvs[1];
-                            auto uv2=newTri.uvs[2];
-                            float constant=1/((uv0[0]-uv2[0])*(uv1[1]-uv2[1])-(uv0[1]-uv2[1])*(uv1[0]-uv2[0]));
-                            newTri.dpdu=glm::normalize(((uv1[1]-uv2[1])*e1-(uv0[1]-uv2[1])*e2)*constant);
-                            newTri.dpdv=glm::normalize((-(uv1[0]-uv2[0])*e1+(uv0[0]-uv2[0])*e2)*constant);
-                            //printvec3(newTri.dpdu);
-                            //printvec3(newTri.dpdv);
-                            newTri.g_norm=(newTri.normals[0]+newTri.normals[1]+newTri.normals[2])/3.0f;
-                            LS+=glm::length(glm::cross(e1,e2));
-                            
-                            newTri.size = glm::length(glm::cross(newTri.vertices[1] - newTri.vertices[0], newTri.vertices[2] - newTri.vertices[0]));
 
-                            triGeom.tri=newTri;
-                            trinode.geom=geoms.size();
-                            
+                            // Compute additional triangle properties
+                            auto e1 = newTri.vertices[0] - newTri.vertices[2];
+                            auto e2 = newTri.vertices[1] - newTri.vertices[2];
+                            auto uv0 = newTri.uvs[0], uv1 = newTri.uvs[1], uv2 = newTri.uvs[2];
+
+                            float constant = 1.0f / ((uv0.x - uv2.x) * (uv1.y - uv2.y) - (uv0.y - uv2.y) * (uv1.x - uv2.x));
+                            newTri.dpdu = glm::normalize(((uv1.y - uv2.y) * e1 - (uv0.y - uv2.y) * e2) * constant);
+                            newTri.dpdv = glm::normalize((-(uv1.x - uv2.x) * e1 + (uv0.x - uv2.x) * e2) * constant);
+                            newTri.g_norm = glm::normalize(newTri.normals[0] + newTri.normals[1] + newTri.normals[2]);
+
+                            newTri.size = glm::length(glm::cross(e1, e2));
+                            totalArea += newTri.size;
+
+                            triGeom.tri = newTri;
+                            trinode.geom = geoms.size();
                             geoms.push_back(triGeom);
                             BVH.push_back(trinode);
-                            
                             tri_size++;
                         }
-                        int matid=shape.mesh.material_ids[0]+materialStartIdx;
-                        if(std::find(lightmat.begin(), lightmat.end(), matid) != lightmat.end()){
-                            int mesh_end=mesh_start+shape.mesh.indices.size()/3;
-                            Lights.push_back(mesh_start);
-                            Lights.push_back(mesh_end);
-                            LightArea.push_back(LS);
+
+                        int matid = shape.mesh.material_ids[0] + materialStartIdx;
+                        if (std::find(lightmat.begin(), lightmat.end(), matid) != lightmat.end()) {
+                            int meshEnd = meshStart + shape.mesh.indices.size() / 3;
+                            Lights.push_back(meshStart);
+                            Lights.push_back(meshEnd);
+                            LightArea.push_back(totalArea);
                         }
-                            
                     }
-                }  
+                }
             }
-            
         }
         //link material
        // cout << "starting index" <<starting_index<< endl;
@@ -434,8 +417,6 @@ int Scene::loadGeom(string objectid) {
                     else
                         LightArea.push_back(6.0f);
                 }
-                
-                //BVH[starting_index].geom.materialid=materialid;
             }
         }
 
@@ -453,33 +434,27 @@ int Scene::loadGeom(string objectid) {
                 if(newGeom.type == MESH){
                     for(int i=starting_index;i<tri_size;i++){
                         geoms[i].translation=translation;
-                        //g.translation=translation;
                     }
                 }else{
                     newGeom.translation=translation;
-                    //BVH[starting_index].geom.translation=translation;
                 }
             } else if (strcmp(tokens[0].c_str(), "ROTAT") == 0) {
                 rotation = glm::vec3(atof(tokens[1].c_str()), atof(tokens[2].c_str()), atof(tokens[3].c_str()));
                 if(newGeom.type == MESH){
                     for(int i=starting_index;i<tri_size;i++){
                         geoms[i].rotation=rotation;
-                        //g.rotation=rotation;
                     }
                 }else{
                     newGeom.rotation=rotation;
-                    //BVH[starting_index].geom.rotation=rotation;
                 }
             } else if (strcmp(tokens[0].c_str(), "SCALE") == 0) {
                 scale = glm::vec3(atof(tokens[1].c_str()), atof(tokens[2].c_str()), atof(tokens[3].c_str()));
                 if(newGeom.type == MESH){
                     for(int i=starting_index;i<tri_size;i++){
                         geoms[i].scale=scale;
-                        //g.scale=scale;
                     }
                 }else{
                     newGeom.scale=scale;
-                    //BVH[starting_index].geom.scale=scale;
                 }
             }
             
@@ -493,18 +468,12 @@ int Scene::loadGeom(string objectid) {
                 geoms[i].inverseTransform = glm::inverse(geoms[i].transform);
                 geoms[i].invTranspose = glm::inverseTranspose(geoms[i].transform);
                 
-                //g.transform = utilityCore::buildTransformationMatrix(g.translation, g.rotation, g.scale);
-                //g.inverseTransform = glm::inverse(g.transform);
-                //g.invTranspose = glm::inverseTranspose(g.transform);
             }
         }else{
             newGeom.transform = utilityCore::buildTransformationMatrix(newGeom.translation, newGeom.rotation, newGeom.scale);
             newGeom.inverseTransform = glm::inverse(newGeom.transform);
             newGeom.invTranspose = glm::inverseTranspose(newGeom.transform);
 
-            /*BVH[starting_index].geom.transform = utilityCore::buildTransformationMatrix(BVH[starting_index].geom.translation, BVH[starting_index].geom.rotation, BVH[starting_index].geom.scale);
-            BVH[starting_index].geom.inverseTransform = glm::inverse(BVH[starting_index].geom.transform);
-            BVH[starting_index].geom.invTranspose = glm::inverseTranspose(BVH[starting_index].geom.transform);*/
         }
         
         
@@ -589,8 +558,8 @@ int Scene::loadMaterial(string materialid) {
     } else {
         cout << "Loading Material " << id << "..." << endl;
         Material newMaterial;
-        newMaterial.dimg=-1;
-        newMaterial.nimg=-1;
+        newMaterial.texture.diffuseID=-1;
+        newMaterial.texture.normalID=-1;
 
         //load static properties
         for (int i = 0; i < 7; i++) {

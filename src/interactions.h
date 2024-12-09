@@ -7,7 +7,7 @@
  * Computes a cosine-weighted random direction in a hemisphere.
  * Used for diffuse lighting.
  */
-__host__ __device__
+__device__
 glm::vec3 calculateRandomDirectionInHemisphere(
         glm::vec3 normal, thrust::default_random_engine &rng,float exponent) {
     thrust::uniform_real_distribution<float> u01(0, 1);
@@ -41,7 +41,7 @@ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
-__host__ __device__
+__device__
 float reflectance(float cosine, float ref_idx) {
     // Use Schlick's approximation for reflectance.
     float r0 = (1.0f-ref_idx) / (1.0f+ref_idx);
@@ -49,14 +49,14 @@ float reflectance(float cosine, float ref_idx) {
     return r0 + (1.0f-r0)*pow((1.0f - cosine),5.0f);
 }
 
-__host__ __device__
+__device__
 glm::vec3 refract(glm::vec3& uv, glm::vec3& n, float etai_over_etat) {
     float cos_theta = glm::min(dot(-uv, n), 1.0f);
     glm::vec3 r_out_perp =  etai_over_etat * (uv + cos_theta*n);
     glm::vec3 r_out_parallel = -glm::sqrt(glm::abs(1.0f - glm::length2(r_out_perp))) * n;
     return r_out_perp + r_out_parallel;
 }
-__host__ __device__
+__device__
 void sampleLight(glm::vec3 &dist,Geom & light,
     float & lightsize,thrust::default_random_engine &rng,float &pdf,glm::vec3& orig){
     thrust::uniform_real_distribution<float> u01(0, 1);
@@ -89,7 +89,7 @@ float computeG(glm::vec3 w,glm::vec3 normal,float expoenent){
     }
 }
 
-__host__ __device__
+__device__
 void diffuseScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,thrust::default_random_engine &rng, Geom & light,
@@ -117,7 +117,7 @@ void diffuseScatter(PathSegment & pathSegment,
     
 }
 
-__host__ __device__
+__device__
 void refractScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
      glm::vec3 &materialColor,const float ior,thrust::default_random_engine &rng, glm::vec3 &throughput){
@@ -141,7 +141,7 @@ void refractScatter(PathSegment & pathSegment,
     pathSegment.remainingBounces--; 
 }
 
-__host__ __device__
+ __device__
 void specularScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
@@ -173,7 +173,7 @@ void specularScatter(PathSegment & pathSegment,
     
 }
 
-__host__ __device__
+__device__
 void blinnScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
@@ -199,7 +199,7 @@ void blinnScatter(PathSegment & pathSegment,
     
 }
 
-__host__ __device__
+__device__
 void blinnMicScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,float exponent,thrust::default_random_engine &rng, Geom & light,
@@ -227,7 +227,7 @@ void blinnMicScatter(PathSegment & pathSegment,
     
 }
 
-__host__ __device__
+__device__
 void diffuseMicScatter(PathSegment & pathSegment,
         ShadeableIntersection& intersection,
         glm::vec3 &materialColor,thrust::default_random_engine &rng, Geom & light,
@@ -281,13 +281,13 @@ void diffuseMicScatter(PathSegment & pathSegment,
  *
  * You may need to change the parameter list for your purposes!
  */
-__host__ __device__
+__device__
 void scatterRay(
     PathSegment& pathSegment,
     ShadeableIntersection& intersection,
     Material& m,
     thrust::default_random_engine& rng,
-    glm::vec3* textPixel,
+    cudaTextureObject_t* texts,
     glm::vec3 back,
     Geom & light,
     float & lightsize,
@@ -305,18 +305,14 @@ void scatterRay(
     }
 
     glm::vec3 materialColor=m.color;
-    if(m.dimg!=-1){
-        int x=(int)(intersection.uv.x*m.dwidth);
-        int y=(int)((1.0f-intersection.uv.y)*m.dheight);
-        int imgidx= y*m.dwidth+x+m.dimgidx;
-        materialColor=textPixel[imgidx];
+    if(m.texture.diffuseID!=-1){
+        float4 texColor = tex2D<float4>(texts[m.texture.diffuseID],intersection.uv.x, 1.0f-intersection.uv.y);
+        materialColor=glm::vec3(texColor.x,texColor.y,texColor.z);
     }
     
-    if(m.nimg!=-1){
-        int x=(int)(intersection.uv.x*m.nwidth);
-        int y=(int)((1.0f-intersection.uv.y)*m.nheight);
-        int imgidx= y*m.nwidth+x+m.nimgidx;
-        glm::vec3 Bump=textPixel[imgidx];
+    if(m.texture.normalID!=-1){
+        float4 texColor = tex2D<float4>(texts[m.texture.normalID],intersection.uv.x, 1.0f-intersection.uv.y);
+        glm::vec3 Bump=glm::vec3(texColor.x,texColor.y,texColor.z);
         Bump=glm::normalize(2.0f*Bump-glm::vec3(1.0f));
         intersection.surfaceNormal=glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);
         //glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);

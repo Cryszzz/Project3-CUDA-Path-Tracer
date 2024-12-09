@@ -4,6 +4,8 @@
         "ostream": "cpp",
         "cmath": "cpp",
         "vector": "cpp",
-        "cstdlib": "cpp"
+        "cstdlib": "cpp",
+        "iostream": "cpp",
+        "xlocinfo": "cpp"
     }
 }

@@ -16,6 +16,7 @@ private:
     int loadMaterial(string materialid);
     int loadGeom(string objectid);
     int loadCamera();
+    MyTexture loadTexture(const std::string& textureFile);
 public:
     Scene(string filename);
     ~Scene();
@@ -26,7 +27,7 @@ public:
     std::vector<int> Lights;
     std::vector<float> LightArea;
     std::vector<Material> materials;
-    std::vector<glm::vec3> imgtext;
+    std::vector<MyTexture> textures;
     glm::vec3 backColor=glm::vec3(0.0f);
     RenderState state;
 };
