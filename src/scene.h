@@ -28,6 +28,7 @@ public:
     std::vector<float> LightArea;
     std::vector<Material> materials;
     std::vector<MyTexture> textures;
-    glm::vec3 backColor=glm::vec3(0.0f);
+    MyTexture envmap;
+    glm::vec4 backColor=glm::vec4(0.0f);
     RenderState state;
 };

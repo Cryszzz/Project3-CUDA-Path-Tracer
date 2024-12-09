@@ -144,7 +144,7 @@ void buildBVH(std::vector<BVHnode> &BVH, std::vector<Geom>& geoms){
 MyTexture Scene::loadTexture(const std::string& textureFile) {
     MyTexture texture;
     int width, height, numComponents;
-
+    std::cout << "Loading texture file: " << textureFile << std::endl;
     // Load image data
     unsigned char* data = stbi_load(textureFile.c_str(), &width, &height, &numComponents, 0);
 
@@ -159,7 +159,7 @@ MyTexture Scene::loadTexture(const std::string& textureFile) {
             float r = (numComponents > 0) ? data[i * numComponents + 0] / 255.0f : 0.0f;
             float g = (numComponents > 1) ? data[i * numComponents + 1] / 255.0f : 0.0f;
             float b = (numComponents > 2) ? data[i * numComponents + 2] / 255.0f : 0.0f;
-            float a = (numComponents > 3) ? data[i * numComponents + 3] / 255.0f : 1.0f;
+            float a = (numComponents > 3) ? data[i * numComponents + 3] / 255.0f : 0.0f;
 
             // Push padded pixel to texture data
             texture.data.push_back(glm::vec4(r, g, b, a));
@@ -199,9 +199,10 @@ Scene::Scene(string filename) {
                 loadCamera();
                 cout << " " << endl;
             } else if(strcmp(tokens[0].c_str(), "BACKGROUND_COLOR") == 0){
-                backColor=glm::vec3(atof(tokens[1].c_str()), atof(tokens[2].c_str()), atof(tokens[3].c_str()));
-                cout<< "background color";
-                printvec3(backColor);
+                backColor=glm::vec4(atof(tokens[1].c_str()), atof(tokens[2].c_str()), atof(tokens[3].c_str()),1.0f);
+            } else if(strcmp(tokens[0].c_str(), "ENVIRONMENT_MAP") == 0){
+                envmap=loadTexture(tokens[1]);
+                backColor.w=0.0f;
             }
         }
     }
@@ -280,7 +281,7 @@ int Scene::loadGeom(string objectid) {
                         mat.hasReflective = (material.illum >= 3) ? 1.0f : 0.0f;
                         mat.hasRefractive = glm::length(glm::vec3(material.transmittance[0], material.transmittance[1], material.transmittance[2]));
                         mat.indexOfRefraction = material.ior > 0 ? material.ior : 1.0f;
-                        mat.emittance = glm::length(glm::vec3(material.emission[0], material.emission[1], material.emission[2]));
+                        mat.emittance = glm::vec3(material.emission[0], material.emission[1], material.emission[2]);
 
                         // Handle diffuse texture
                         if (!material.diffuse_texname.empty()) {
@@ -300,9 +301,24 @@ int Scene::loadGeom(string objectid) {
                             mat.texture.normalID = -1;
                         }
 
-                        if (mat.emittance > 0.0f) {
-                            lightmat.push_back(materials.size());
+                        // Handle metallic texture
+                        if (!material.metallic_texname.empty()) {
+                            MyTexture metallicTexture = loadTexture(objPrefix + material.metallic_texname);
+                            mat.texture.metallicID = textures.size();
+                            textures.push_back(metallicTexture);
+                        } else {
+                            mat.texture.metallicID = -1;
                         }
+
+                        // Handle emissive texture
+                        if (!material.emissive_texname.empty()) {
+                            MyTexture emissiveTexture = loadTexture(objPrefix + material.emissive_texname);
+                            mat.texture.emissiveID = textures.size();
+                            textures.push_back(emissiveTexture);
+                        } else {
+                            mat.texture.emissiveID = -1;
+                        }
+
 
                         materials.push_back(mat);
                     }
@@ -560,6 +576,8 @@ int Scene::loadMaterial(string materialid) {
         Material newMaterial;
         newMaterial.texture.diffuseID=-1;
         newMaterial.texture.normalID=-1;
+        newMaterial.texture.metallicID=-1;
+        newMaterial.texture.emissiveID=-1;
 
         //load static properties
         for (int i = 0; i < 7; i++) {
@@ -581,8 +599,8 @@ int Scene::loadMaterial(string materialid) {
             } else if (strcmp(tokens[0].c_str(), "REFRIOR") == 0) {
                 newMaterial.indexOfRefraction = atof(tokens[1].c_str());
             } else if (strcmp(tokens[0].c_str(), "EMITTANCE") == 0) {
-                newMaterial.emittance = atof(tokens[1].c_str());
-                if(newMaterial.emittance>0)
+                newMaterial.emittance = ((float)atof(tokens[1].c_str()))*glm::vec3(1.0f);
+                if(glm::length(newMaterial.emittance)>0)
                     lightmat.push_back(materials.size());
             }
         }

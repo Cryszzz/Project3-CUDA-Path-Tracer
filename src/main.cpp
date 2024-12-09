@@ -159,6 +159,7 @@ void runCuda() {
 
 		// unmap buffer object
 		cudaGLUnmapBufferObject(pbo);
+
 	}
 	else {
 		saveImage();

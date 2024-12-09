@@ -288,7 +288,6 @@ void scatterRay(
     Material& m,
     thrust::default_random_engine& rng,
     cudaTextureObject_t* texts,
-    glm::vec3 back,
     Geom & light,
     float & lightsize,
     int shading,
@@ -297,18 +296,18 @@ void scatterRay(
     // TODO: implement this.
     // A basic implementation of pure-diffuse shading will just call the
     // calculateRandomDirectionInHemisphere defined above.
-
+    
     if(glm::dot(-glm::normalize(pathSegment.ray.direction), intersection.surfaceNormal)<=0.0f){
-        pathSegment.color *= back;
         pathSegment.remainingBounces=0;
         return;
     }
-
+    float specularProbability = m.hasReflective;
     glm::vec3 materialColor=m.color;
     if(m.texture.diffuseID!=-1){
         float4 texColor = tex2D<float4>(texts[m.texture.diffuseID],intersection.uv.x, 1.0f-intersection.uv.y);
         materialColor=glm::vec3(texColor.x,texColor.y,texColor.z);
     }
+    glm::vec3 emission= m.emittance;
     
     if(m.texture.normalID!=-1){
         float4 texColor = tex2D<float4>(texts[m.texture.normalID],intersection.uv.x, 1.0f-intersection.uv.y);
@@ -318,20 +317,31 @@ void scatterRay(
         //glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);
     }
 
-    if (m.emittance > 0.0f) {
-        pathSegment.color *= (materialColor * m.emittance);
+    if(m.texture.metallicID!=-1){
+        float4 texColor = tex2D<float4>(texts[m.texture.metallicID],intersection.uv.x, 1.0f-intersection.uv.y);
+        specularProbability = texColor.x;
+        //glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);
+    }
+    if(m.texture.emissiveID!=-1){
+        float4 texColor = tex2D<float4>(texts[m.texture.emissiveID],intersection.uv.x, 1.0f-intersection.uv.y);
+        emission *= glm::vec3(texColor.x,texColor.y,texColor.z);
+        //glm::normalize(Bump[0]*intersection.dpdu+Bump[1]*intersection.dpdv+Bump[2]*intersection.surfaceNormal);
+    }
+    
+    if (glm::length(emission) > 0.0f) {
+        pathSegment.color *= emission;
         pathSegment.remainingBounces=0;
     }else{
         float r1=u01(rng);
         if(r1<m.hasRefractive){
             refractScatter(pathSegment,intersection,materialColor,m.indexOfRefraction,rng,throughput);
-        }else if(r1<m.hasReflective+m.hasRefractive){
-            if(shading==0)
+        }else if(r1<specularProbability+m.hasRefractive){
+            //if(shading==0)
                 specularScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize,throughput);
-            else if(shading==1)
+           /* else if(shading==1)
                 blinnScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize);
             else
-                blinnMicScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize);
+                blinnMicScatter(pathSegment,intersection,m.specular.color,m.specular.exponent,rng,light,lightsize);*/
         }else{
             diffuseScatter(pathSegment,intersection,materialColor,rng,light,lightsize,throughput);
         } 

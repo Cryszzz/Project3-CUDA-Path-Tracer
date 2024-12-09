@@ -64,6 +64,8 @@ struct MyTexture{
 struct TextID{
     int diffuseID;
     int normalID;
+    int metallicID;
+    int emissiveID;
 };
 
 struct Material {
@@ -75,7 +77,7 @@ struct Material {
     float hasReflective;
     float hasRefractive;
     float indexOfRefraction;
-    float emittance;
+    glm::vec3 emittance;
     TextID texture;
 };
 

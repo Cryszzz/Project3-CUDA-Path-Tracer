@@ -1,5 +1,3 @@
-BACKGROUND_COLOR 0.1 0.1 0.3
-
 // Emissive material (light)
 MATERIAL 0
 RGB         1 1 1
@@ -8,7 +6,7 @@ SPECRGB     0 0 0
 REFL        0
 REFR        0
 REFRIOR     0
-EMITTANCE   5
+EMITTANCE   10
 
 // Diffuse white
 MATERIAL 1
@@ -42,12 +40,12 @@ EMITTANCE   0
 
 // Specular white
 MATERIAL 4
-RGB         .98 .98 .0
-SPECEX      0.1
+RGB         .98 .98 .98
+SPECEX      0
 SPECRGB     .98 .98 .98
-REFL        1.0
-REFR        0.0
-REFRIOR     1.5
+REFL        0
+REFR        0
+REFRIOR     0
 EMITTANCE   0
 
 // Camera
@@ -55,7 +53,7 @@ CAMERA
 RES         800 800
 FOVY        45
 ITERATIONS  5000
-DEPTH       10
+DEPTH       20
 FILE        cornell
 EYE         0.0 5 10.5
 LOOKAT      0 5 0
@@ -115,6 +113,6 @@ OBJECT 6
 mesh
 ./../mesh/cube_text2.obj
 material -1
-TRANS       0 3 0
-ROTAT       0 0 0
-SCALE       3 3 3
+TRANS       -1 1 -1
+ROTAT       0 20 0
+SCALE       2 8 2
