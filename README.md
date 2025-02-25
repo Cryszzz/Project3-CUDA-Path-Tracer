@@ -10,24 +10,27 @@ CUDA Path Tracer
 ### Features
 
 Visual:
-* Anti-aliasing - :two: points
-* Mirror - :zero: points
-* Refraction - :two: points (glass with specular component)
-* Plastic Material - :question: points (mixture of diffuse, refraction, specular material)
-* Phong / Blinn-Phong with cosine lobine importance sampling - :question: points 
-* Microfacet Model with Blinn-Phong - :question: points 
-* Texture/Normal Mapping with mesh loading - :six: points
+* Anti-aliasing 
+* Metallic
+* Refraction 
+* Plastic Material (mixture of diffuse, refraction, specular material)
+* Phong / Blinn-Phong with cosine lobine importance sampling 
+* Microfacet Model with Blinn-Phong 
+* Texture/Normal Mapping with mesh loading (CUDA Textures)
+* Open-Denoiser Integration
 
 Mesh: 
-* Obj/Mtl file loading - :two: points
+* Obj/Mtl file loading 
 
 Performance:
-* First Bounce Cache - :zero: points
-* Stream Compaction - :zero: points
-* Material Sort - :zero: points
-* BVH - :six: points
+* Radiance Cache [NEW FEATURE!!!] - [See detail here] (https://drive.google.com/file/d/1yf5j-4Vws_isBTcUxQH1uNM8n0ZmoC5U/view?usp=sharing)
+* Russian Roulette Termination
+* First Bounce Cache 
+* Stream Compaction 
+* Material Sort 
+* BVH 
 
-![sponza](./img/sponza.png)
+![sponza](./img/image.png)
 
 Note: some of the features are real time adjustable by clicking on some keys. 
 
